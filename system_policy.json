@@ -12,7 +12,9 @@
       "architect_timeout_s": 6,
       "breaker_threshold": 2,
       "breaker_cooldown_s": 30,
-      "studio_model": "gemma3:1b"
+      "studio_model": "ministral-pubcast:3b",
+      "model_context": 1024,
+      "model_predict": 100
     },
     "medium": {
       "description": "Balanced default for daily production.",
@@ -24,7 +26,9 @@
       "architect_timeout_s": 12,
       "breaker_threshold": 3,
       "breaker_cooldown_s": 60,
-      "studio_model": "gemma3:1b"
+      "studio_model": "ministral-pubcast:3b",
+      "model_context": 1024,
+      "model_predict": 120
     },
     "high": {
       "description": "Higher visual smoothness where client hardware can handle it.",
@@ -36,7 +40,9 @@
       "architect_timeout_s": 16,
       "breaker_threshold": 5,
       "breaker_cooldown_s": 120,
-      "studio_model": "gemma3:1b"
+      "studio_model": "ministral-pubcast:3b",
+      "model_context": 2048,
+      "model_predict": 160
     }
   }
 }
