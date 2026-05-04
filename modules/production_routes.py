@@ -22,24 +22,21 @@ import asyncio
 import json
 import logging
 import time
-from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
-from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, File, Query
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, File
+from fastapi.responses import FileResponse
 
-from modules.cameras import CameraManager, CameraSource, CameraTransport, create_default_cameras
+from modules.cameras import CameraManager, CameraSource, CameraTransport
 from modules.recording import (
     RecordingService,
-    RecordingSession,
     RecordingState,
     ContainerFormat,
-    EncodingProfile,
-    create_recording_service,
 )
-
 from modules.route_security import bound_actor, require_role
 from modules.persistence import sanitize_filename, unique_child_path
+from modules.runtime_control_routes import create_runtime_control_router
+from modules.stage_compat_routes import create_stage_compat_router
 
 logger = logging.getLogger("pubcast.production")
 
@@ -127,6 +124,13 @@ def create_production_router(
     """Create the production API router."""
     router = APIRouter(tags=["Production"])
 
+    # Compatibility bridge routes are mounted here because main.py already mounts
+    # production_routes after the core runtime managers exist. These bridge routers
+    # do not own the systems; they delegate to existing managers and return explicit
+    # unavailable payloads instead of letting the panoramic/control-room UI hit 404s.
+    router.include_router(create_runtime_control_router())
+    router.include_router(create_stage_compat_router(hub=hub, cameras=cameras, recording=recording))
+
     # ═══════════════════════════════════════════════════════════════════
     # CAMERAS
     # ═══════════════════════════════════════════════════════════════════
@@ -181,7 +185,6 @@ def create_production_router(
         if not ok:
             raise HTTPException(404, f"Camera source '{source_id}' not found.")
 
-        # Broadcast switch to all connected clients
         if hub:
             pgm = cameras.get_program_source()
             pvw = cameras.get_preview_source()
@@ -227,13 +230,14 @@ def create_production_router(
         """Register a new camera source."""
         body = await _json_dict(request)
         try:
+            source_id = _string_field(body, "source_id", required=True, max_length=128)
             source = CameraSource(
-                source_id=_string_field(body, "source_id", required=True, max_length=128),
-                name=_string_field(body, "name", default=_string_field(body, "source_id", required=True, max_length=128), max_length=128),
+                source_id=source_id,
+                name=_string_field(body, "name", default=source_id, max_length=128),
                 location=_string_field(body, "location", default="virtual", max_length=128) or "virtual",
                 description=_string_field(body, "description", default="", max_length=512),
                 transport=CameraTransport(_string_field(body, "transport", default="virtual", max_length=64) or "virtual"),
-                endpoint=_string_field(body, "endpoint", default=f"virtual://{_string_field(body, 'source_id', required=True, max_length=128)}", max_length=512),
+                endpoint=_string_field(body, "endpoint", default=f"virtual://{source_id}", max_length=512),
                 position=_vector3(body, "position"),
                 rotation=_vector3(body, "rotation"),
                 fov=_numeric_field(body, "fov", default=60.0, minimum=1.0),
@@ -276,7 +280,6 @@ def create_production_router(
         body = await _json_dict(request)
         sources = _string_list(body, "sources")
         if not sources:
-            # Default: record the current program source
             pgm = cameras.get_program_source()
             if pgm:
                 sources = [pgm.source_id]
@@ -301,7 +304,6 @@ def create_production_router(
         except (ValueError, PermissionError, KeyError) as exc:
             raise HTTPException(400, str(exc))
 
-        # Broadcast recording start
         if hub:
             await hub.broadcast_system_event({
                 "type": "recording_started",
@@ -433,14 +435,12 @@ def create_production_router(
     @router.post("/api/production/panic")
     async def production_panic(identity: Dict[str, Any] = Depends(require_role("mod"))):
         """Emergency: stop all recordings, mute, fade to black."""
-        # Stop all active recordings
         stopped = []
         for session in recording.list_sessions():
             if session.state in (RecordingState.ACTIVE, RecordingState.COUNTDOWN):
                 recording.stop_session(session.session_id)
                 stopped.append(session.session_id)
 
-        # Broadcast panic to all clients
         if hub:
             await hub.broadcast_system_event({
                 "type": "production_panic",
@@ -450,7 +450,6 @@ def create_production_router(
                     "message": "PANIC — all recordings stopped, fade to black",
                 },
             })
-            # Also update production state
             hub.update_production_state({
                 "on_air": False,
                 "camera": "black",
