@@ -1,0 +1,305 @@
+{% extends "base.html" %}
+{% block title %}Dressing Room — PubCast AI{% endblock %}
+{% block head %}
+  <link rel="stylesheet" href="/static/styles.css" />
+  <link rel="stylesheet" href="/static/dressing.css" />
+{% endblock %}
+{% block body %}
+<header>
+  <div class="logo">PubCast<em>:AI</em></div>
+  <nav>
+    <a href="/control"><button class="nav-btn">Control</button></a>
+    <a href="/world"><button class="nav-btn">World</button></a>
+    <a href="/dressing-foundry"><button class="nav-btn">Foundry</button></a>
+    <a href="/avatar-walk-test"><button class="nav-btn">Manny Walk</button></a>
+    <button class="nav-btn active">Dressing</button>
+  </nav>
+</header>
+<main>
+  <div class="view">
+    <h2>Dressing Room</h2>
+    <div class="grid two">
+      <div class="card" style="display:flex;flex-direction:column;align-items:center;gap:1rem;padding:2rem">
+        <div class="card-title" style="align-self:flex-start">Mirror Preview</div>
+        <canvas id="neon-avatar" width="260" height="260" style="border-radius:50%;background:rgba(0,224,255,0.04);border:2px solid rgba(0,224,255,0.12)"></canvas>
+        <div id="avatar-name" style="font-size:13px;color:var(--accent);letter-spacing:0.12em;text-transform:uppercase">—</div>
+      </div>
+      <div>
+        <div class="card" style="margin-bottom:1rem">
+          <div class="card-title">Identity</div>
+          <label>Display Name<input type="text" id="displayName" placeholder="Your name"/></label>
+          <label>Avatar Color<input type="color" id="avatarColor" value="#00e0ff" style="height:38px"/></label>
+          <label>Badge / Title<input type="text" id="badge" placeholder="e.g. Host, Producer…"/></label>
+          <div class="row mt">
+            <button type="button" id="save-avatar" style="background:var(--accent-dim);border:1px solid rgba(0,224,255,0.3);color:var(--accent);padding:0.45rem 1.2rem;border-radius:6px;cursor:pointer;font-weight:700;font-size:12px;letter-spacing:0.08em">SAVE</button>
+            <span id="avatar-status" style="font-size:11px;color:var(--text-muted)"></span>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-title">Avatar Preset</div>
+          <div id="preset-grid" style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-bottom:10px"></div>
+          <div id="preset-name" style="font-size:11px;color:var(--accent);text-align:center;letter-spacing:0.1em;min-height:16px"></div>
+        </div>
+        <div class="card" style="margin-top:1rem">
+          <div class="card-title">Private Dressing Room Lock</div>
+          <div style="font-size:11px;color:var(--text-muted);line-height:1.5;margin-bottom:10px">Optional. Once enabled, the room code stays on until you enter it in settings and turn it off.</div>
+          <div id="security-summary" style="font-size:11px;color:var(--accent);margin-bottom:10px">Checking room lock…</div>
+          <label>4-character room code<input type="text" id="roomCode" maxlength="4" placeholder="#317 or 547*"/></label>
+          <div class="row mt" style="gap:8px;flex-wrap:wrap">
+            <button type="button" id="set-room-code" style="background:var(--accent-dim);border:1px solid rgba(0,224,255,0.3);color:var(--accent);padding:0.45rem 1.2rem;border-radius:6px;cursor:pointer;font-weight:700;font-size:12px;letter-spacing:0.08em">SET CODE</button>
+            <button type="button" id="disable-room-code" style="background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.12);color:var(--text);padding:0.45rem 1.2rem;border-radius:6px;cursor:pointer;font-weight:700;font-size:12px;letter-spacing:0.08em">DISABLE</button>
+          </div>
+          <div id="security-status" style="font-size:11px;color:var(--text-muted);margin-top:10px"></div>
+          <div class="row mt" style="gap:8px;align-items:center;flex-wrap:wrap">
+            <input type="text" id="roomCodeCheck" maxlength="4" placeholder="Enter code to test" style="max-width:180px"/>
+            <button type="button" id="test-room-code" style="background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.12);color:var(--text);padding:0.45rem 1rem;border-radius:6px;cursor:pointer;font-weight:700;font-size:12px;letter-spacing:0.08em">TEST ENTRY</button>
+          </div>
+          <div id="security-incident" style="font-size:11px;color:var(--warn);margin-top:8px"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</main>
+{% endblock %}
+{% block scripts %}
+<script>
+let _selectedPreset = '';
+
+
+const CLIENT_ID = (() => {
+  try {
+    const sessionUser = JSON.parse(sessionStorage.getItem('pubcast_user') || 'null');
+    return sessionUser?.user_id || localStorage.getItem('pubcastHostId') || 'anon';
+  } catch(e) {
+    return localStorage.getItem('pubcastHostId') || 'anon';
+  }
+})();
+const CURRENT_PROJECT_ID = localStorage.getItem('pubcastProjectId') || 'default';
+const CURRENT_SESSION_ID = sessionStorage.getItem('pubcastSessionId') || 'default';
+
+function apiHeaders(extra={}) {
+  return { 'Content-Type': 'application/json', 'X-Client-Id': CLIENT_ID, ...extra };
+}
+
+
+async function ensureSessionIdentity() {
+  try {
+    const sessionUser = JSON.parse(sessionStorage.getItem('pubcast_user') || 'null') || {};
+    const displayName = sessionUser.display_name || sessionUser.name || document.getElementById('displayName')?.value || CLIENT_ID;
+    await fetch('/api/session/register', {
+      method: 'POST',
+      headers: apiHeaders(),
+      body: JSON.stringify({
+        user_id: CLIENT_ID,
+        display_name: displayName,
+        session_id: CURRENT_SESSION_ID,
+        project_id: CURRENT_PROJECT_ID,
+        credit_name: displayName,
+        session_role: ['dressing_room_owner'],
+        project_role: [],
+        presence_mode: 'avatar_static',
+      })
+    });
+    const resolved = await fetch('/api/dressing-room/resolve', {
+      method: 'POST',
+      headers: apiHeaders(),
+      body: JSON.stringify({ user_id: CLIENT_ID, display_name: displayName, session_id: CURRENT_SESSION_ID, project_id: CURRENT_PROJECT_ID })
+    }).then(r => r.json()).catch(() => null);
+    if (resolved && resolved.dressing_room_id) {
+      localStorage.setItem('pubcastDressingRoomId', resolved.dressing_room_id);
+    }
+  } catch (e) {}
+}
+
+async function loadSecurityState() {
+  const summary = document.getElementById('security-summary');
+  const incident = document.getElementById('security-incident');
+  const status = document.getElementById('security-status');
+  try {
+    const r = await fetch(`/api/dressing-room/security/status?project_id=${encodeURIComponent(CURRENT_PROJECT_ID)}&session_id=${encodeURIComponent(CURRENT_SESSION_ID)}`, { headers: { 'X-Client-Id': CLIENT_ID } });
+    const d = await r.json();
+    summary.textContent = d.lock_enabled ? 'Room code is enabled.' : 'Room code is currently off.';
+    status.textContent = d.code_required ? 'Code will be required when this room is entered.' : 'No room code currently required for this session.';
+    incident.textContent = d.incident_id ? `Security incident on file: ${d.incident_id}` : '';
+    if (d.threat_level && d.threat_level !== 'normal') {
+      incident.textContent = `${incident.textContent ? incident.textContent + ' — ' : ''}Threat level: ${d.threat_level.toUpperCase()}`;
+    }
+  } catch (e) {
+    summary.textContent = 'Room lock status unavailable.';
+  }
+}
+
+async function setRoomCode() {
+  const status = document.getElementById('security-status');
+  const code = document.getElementById('roomCode').value.trim();
+  try {
+    const r = await fetch('/api/dressing-room/security/code', {
+      method: 'POST',
+      headers: apiHeaders(),
+      body: JSON.stringify({ action: 'set', code })
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.detail || 'Could not set room code');
+    status.textContent = '✓ Room code enabled';
+    status.style.color = 'var(--ok)';
+    loadSecurityState();
+  } catch (e) {
+    status.textContent = `✗ ${e.message}`;
+    status.style.color = 'var(--danger)';
+  }
+}
+
+async function disableRoomCode() {
+  const status = document.getElementById('security-status');
+  const currentCode = document.getElementById('roomCode').value.trim();
+  try {
+    const r = await fetch('/api/dressing-room/security/code', {
+      method: 'POST',
+      headers: apiHeaders(),
+      body: JSON.stringify({ action: 'disable', current_code: currentCode })
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.detail || 'Could not disable room code');
+    status.textContent = '✓ Room code disabled';
+    status.style.color = 'var(--ok)';
+    loadSecurityState();
+  } catch (e) {
+    status.textContent = `✗ ${e.message}`;
+    status.style.color = 'var(--danger)';
+  }
+}
+
+async function testRoomCode() {
+  const status = document.getElementById('security-status');
+  const incident = document.getElementById('security-incident');
+  const code = document.getElementById('roomCodeCheck').value.trim();
+  try {
+    const r = await fetch('/api/dressing-room/security/enter', {
+      method: 'POST',
+      headers: apiHeaders(),
+      body: JSON.stringify({
+        room_owner_id: CLIENT_ID,
+        acting_identity: CLIENT_ID,
+        project_id: CURRENT_PROJECT_ID,
+        session_id: CURRENT_SESSION_ID,
+        credential_type: 'personal',
+        valid_routing: true,
+        code,
+        accessed_files: ['avatar_profile', 'portable_dressing_overlay']
+      })
+    });
+    const d = await r.json();
+    if (d.ok) {
+      status.textContent = '✓ Entry accepted';
+      status.style.color = 'var(--ok)';
+    } else {
+      status.textContent = `✗ ${d.status || 'denied'}${d.failed_attempts ? ` (${d.failed_attempts} failed)` : ''}`;
+      status.style.color = 'var(--danger)';
+      incident.textContent = d.incident_id ? `Security incident on file: ${d.incident_id}` : incident.textContent;
+    }
+    loadSecurityState();
+  } catch (e) {
+    status.textContent = `✗ ${e.message}`;
+    status.style.color = 'var(--danger)';
+  }
+}
+
+async function loadState() {
+  try {
+    const r = await fetch('/api/avatars/me', { headers: { 'X-Client-Id': CLIENT_ID } });
+    const d = await r.json();
+    document.getElementById('displayName').value = d.display_name || '';
+    document.getElementById('avatarColor').value = d.glow_color || '#00e0ff';
+    document.getElementById('badge').value = d.badge || '';
+    _selectedPreset = d.preset_id || '';
+    document.getElementById('avatar-name').textContent = d.display_name || 'Unnamed';
+    drawPreview(d.glow_color || '#00e0ff');
+    highlightPreset(_selectedPreset);
+  } catch(e) {}
+}
+
+function drawPreview(color) {
+  const c = document.getElementById('neon-avatar');
+  const ctx = c.getContext('2d');
+  ctx.clearRect(0,0,260,260);
+  const cx=130,cy=130,r=90;
+  const grad = ctx.createRadialGradient(cx,cy,10,cx,cy,r);
+  grad.addColorStop(0, color+'99');
+  grad.addColorStop(0.6, color+'44');
+  grad.addColorStop(1, color+'00');
+  ctx.fillStyle = grad;
+  ctx.beginPath(); ctx.arc(cx,cy,r,0,Math.PI*2); ctx.fill();
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 2;
+  ctx.shadowColor = color;
+  ctx.shadowBlur = 18;
+  ctx.stroke();
+  // Simple silhouette
+  ctx.fillStyle = color + 'cc';
+  ctx.shadowBlur = 8;
+  ctx.beginPath(); ctx.arc(cx, cy-22, 28, 0, Math.PI*2); ctx.fill();
+  ctx.beginPath();
+  ctx.moveTo(cx-36, cy+85); ctx.quadraticCurveTo(cx-42, cy+30, cx, cy+10);
+  ctx.quadraticCurveTo(cx+42, cy+30, cx+36, cy+85);
+  ctx.fill();
+}
+
+document.getElementById('avatarColor').addEventListener('input', e => drawPreview(e.target.value));
+
+async function loadPresets() {
+  const grid = document.getElementById('preset-grid');
+  try {
+    const r = await fetch('/api/avatars/presets', { headers: { 'X-Client-Id': CLIENT_ID } });
+    const d = await r.json();
+    grid.innerHTML = (d.presets||[]).map(p=>`
+      <div class="preset-btn" data-id="${p.preset_id}" onclick="selectPreset('${p.preset_id}','${p.name}','${p.glow_color||'#00e0ff'}')"
+        style="aspect-ratio:1;border-radius:8px;display:flex;align-items:center;justify-content:center;
+          font-size:18px;cursor:pointer;border:2px solid rgba(255,255,255,0.08);
+          background:rgba(0,224,255,0.05);transition:all 0.15s;"
+        title="${p.name}">${p.emoji||'👤'}</div>
+    `).join('');
+    highlightPreset(_selectedPreset);
+  } catch(e) {}
+}
+
+function selectPreset(id, name, color) {
+  _selectedPreset = id;
+  document.getElementById('preset-name').textContent = name;
+  document.getElementById('avatarColor').value = color;
+  drawPreview(color);
+  highlightPreset(id);
+}
+
+function highlightPreset(id) {
+  document.querySelectorAll('.preset-btn').forEach(b => {
+    b.style.borderColor = b.dataset.id===id ? 'var(--accent)' : 'rgba(255,255,255,0.08)';
+    b.style.background  = b.dataset.id===id ? 'rgba(0,224,255,0.12)' : 'rgba(0,224,255,0.05)';
+  });
+}
+
+document.getElementById('save-avatar').addEventListener('click', async () => {
+  const status = document.getElementById('avatar-status');
+  const payload = {
+    display_name: document.getElementById('displayName').value.trim(),
+    glow_color:   document.getElementById('avatarColor').value,
+    badge:        document.getElementById('badge').value.trim(),
+    preset_id:    _selectedPreset,
+  };
+  try {
+    await fetch('/api/avatars/me', {method:'POST',headers:apiHeaders(),body:JSON.stringify(payload)});
+    document.getElementById('avatar-name').textContent = payload.display_name || '—';
+    status.textContent = '✓ Saved';
+    status.style.color = 'var(--ok)';
+    setTimeout(()=>status.textContent='',2000);
+  } catch(e) { status.textContent = '✗ Error'; status.style.color = 'var(--danger)'; }
+});
+
+ensureSessionIdentity();
+loadState();
+loadPresets();
+loadSecurityState();
+document.getElementById('set-room-code').addEventListener('click', setRoomCode);
+document.getElementById('disable-room-code').addEventListener('click', disableRoomCode);
+document.getElementById('test-room-code').addEventListener('click', testRoomCode);
+</script>
+{% endblock %}

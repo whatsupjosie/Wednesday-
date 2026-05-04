@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% block title %}Gallery — PubCast AI{% endblock %}
+{% block head %}<link rel="stylesheet" href="/static/styles.css" />{% endblock %}
+{% block body %}
+<header>
+  <div class="logo">PubCast<em>:AI</em></div>
+  <nav>
+    <a href="/control"><button class="nav-btn">Control</button></a>
+    <a href="/world"><button class="nav-btn">World</button></a>
+    <button class="nav-btn active">Gallery</button>
+  </nav>
+</header>
+<main>
+  <div class="view">
+    <h2>Media Gallery</h2>
+    <div id="vod-grid" class="grid three">
+      <div style="color:var(--text-muted);font-size:13px">Loading…</div>
+    </div>
+  </div>
+</main>
+{% endblock %}
+{% block scripts %}
+<script>
+async function loadGallery() {
+  const grid = document.getElementById('vod-grid');
+  try {
+    const r = await fetch('/api/vod');
+    const d = await r.json();
+    const files = d.files || [];
+    if (!files.length) {
+      grid.innerHTML = '<div style="grid-column:1/-1;color:var(--text-muted);font-size:13px;padding:2rem 0">No media uploaded yet. Use the Control Room to upload files.</div>';
+      return;
+    }
+    grid.innerHTML = files.map(f => {
+      const ext = f.name.split('.').pop().toLowerCase();
+      const isVideo = ['mp4','webm','mov','mkv'].includes(ext);
+      const isAudio = ['wav','mp3','ogg','flac'].includes(ext);
+      const isImg   = ['jpg','jpeg','png','gif','webp'].includes(ext);
+      return `<div class="card" style="display:flex;flex-direction:column;gap:8px">
+        ${isVideo ? `<video src="${f.url}" controls style="width:100%;border-radius:4px;background:#000"></video>`
+         : isImg  ? `<img src="${f.url}" style="width:100%;border-radius:4px;object-fit:cover;max-height:160px">`
+         : isAudio ? `<audio src="${f.url}" controls style="width:100%"></audio>`
+         : `<div style="height:80px;display:flex;align-items:center;justify-content:center;background:var(--surface-2);border-radius:4px;font-size:28px">📄</div>`}
+        <div style="font-size:11px;color:var(--text-muted)">${f.name}</div>
+        <div style="font-size:10px;color:var(--text-faint)">${(f.size/1024).toFixed(1)} KB</div>
+        <a href="${f.url}" download="${f.name}" style="font-size:11px;color:var(--accent);text-decoration:none;letter-spacing:0.06em">↓ DOWNLOAD</a>
+      </div>`;
+    }).join('');
+  } catch(e) { grid.innerHTML = '<div style="color:var(--danger)">Error loading gallery</div>'; }
+}
+loadGallery();
+</script>
+{% endblock %}

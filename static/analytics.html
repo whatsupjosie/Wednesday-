@@ -1,0 +1,77 @@
+{% extends "base.html" %}
+{% block title %}Analytics — PubCast AI{% endblock %}
+{% block head %}<link rel="stylesheet" href="/static/styles.css" />{% endblock %}
+{% block body %}
+<header>
+  <div class="logo">PubCast<em>:AI</em></div>
+  <nav>
+    <a href="/control"><button class="nav-btn">Control</button></a>
+    <a href="/studio"><button class="nav-btn">Studio</button></a>
+    <a href="/world"><button class="nav-btn">World</button></a>
+    <button class="nav-btn active">Analytics</button>
+  </nav>
+</header>
+<main>
+  <div class="view">
+    <h2>Analytics</h2>
+    <div class="grid four" style="margin-bottom:1.4rem">
+      <div class="card" id="stat-sessions"><div class="card-title">Sessions</div><div id="val-sessions" style="font-size:2rem;font-weight:800;color:var(--accent)">—</div></div>
+      <div class="card" id="stat-storage"><div class="card-title">Storage Used</div><div id="val-storage" style="font-size:2rem;font-weight:800;color:var(--gold)">—</div></div>
+      <div class="card"><div class="card-title">WS Rooms</div><div id="val-rooms" style="font-size:2rem;font-weight:800;color:var(--ok)">—</div></div>
+      <div class="card"><div class="card-title">AI Providers</div><div id="val-providers" style="font-size:2rem;font-weight:800;color:#c084fc">—</div></div>
+    </div>
+    <div class="grid two">
+      <div class="card">
+        <div class="card-title">Recording Sessions</div>
+        <div id="session-list" style="font-size:12px;color:var(--text-muted)">Loading…</div>
+      </div>
+      <div class="card">
+        <div class="card-title">System Health</div>
+        <div id="health-detail" style="font-size:12px;color:var(--text-muted)">Loading…</div>
+      </div>
+    </div>
+  </div>
+</main>
+{% endblock %}
+{% block scripts %}
+<script>
+async function load() {
+  try {
+    const [h, s, st] = await Promise.all([
+      fetch('/api/health').then(r=>r.json()),
+      fetch('/api/recording/sessions').then(r=>r.json()),
+      fetch('/api/recording/storage').then(r=>r.json()),
+    ]);
+    document.getElementById('val-sessions').textContent = (s.sessions||[]).length;
+    document.getElementById('val-storage').textContent  = (st.mb||0) + ' MB';
+    document.getElementById('val-rooms').textContent    = Object.values(h.ws_rooms||{}).reduce((a,b)=>a+b,0);
+    const prov = h.ai_providers||{};
+    document.getElementById('val-providers').textContent = Object.values(prov).filter(Boolean).length + '/' + Object.keys(prov).length;
+
+    // Sessions table
+    const sl = document.getElementById('session-list');
+    sl.innerHTML = (s.sessions||[]).length === 0
+      ? '<span style="color:var(--text-faint)">No sessions recorded yet</span>'
+      : (s.sessions||[]).map(sess=>`
+          <div style="display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid rgba(255,255,255,0.04)">
+            <span style="color:var(--text)">${sess.session_id.slice(0,12)}…</span>
+            <span class="badge badge-${sess.state==='active'?'accent':sess.state==='stopped'?'muted':'warn'}">${sess.state}</span>
+          </div>`).join('');
+
+    // Health detail
+    const hd = document.getElementById('health-detail');
+    hd.innerHTML = Object.entries(prov).map(([k,v])=>`
+      <div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid rgba(255,255,255,0.04)">
+        <span style="color:var(--text);text-transform:capitalize">${k}</span>
+        <span class="badge badge-${v?'ok':'muted'}">${v?'●  Keyed':'○  Not set'}</span>
+      </div>`).join('') +
+      `<div style="margin-top:10px;color:var(--text-muted);font-size:11px">
+        Cameras: ${h.cameras?.count||0} sources &nbsp;·&nbsp;
+        Active recordings: ${h.recording?.active_sessions||0}
+      </div>`;
+  } catch(e) { console.error(e); }
+}
+load();
+setInterval(load, 15000);
+</script>
+{% endblock %}

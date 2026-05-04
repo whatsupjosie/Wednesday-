@@ -1,0 +1,6 @@
+C:\Users\hardc\OneDrive\Documents\Playground\Pubcast codex run\rust_crate\target\debug\deps\byteorder-dd1092190580cecd.d: C:\Users\hardc\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\byteorder-1.5.0\src\lib.rs C:\Users\hardc\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\byteorder-1.5.0\src\io.rs
+
+C:\Users\hardc\OneDrive\Documents\Playground\Pubcast codex run\rust_crate\target\debug\deps\libbyteorder-dd1092190580cecd.rmeta: C:\Users\hardc\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\byteorder-1.5.0\src\lib.rs C:\Users\hardc\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\byteorder-1.5.0\src\io.rs
+
+C:\Users\hardc\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\byteorder-1.5.0\src\lib.rs:
+C:\Users\hardc\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\byteorder-1.5.0\src\io.rs:

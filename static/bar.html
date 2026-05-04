@@ -1,0 +1,108 @@
+{% extends "base.html" %}
+{% block title %}The Bar — PubCast AI{% endblock %}
+{% block head %}<link rel="stylesheet" href="/static/styles.css" />{% endblock %}
+{% block body %}
+<header>
+  <div class="logo">PubCast<em>:AI</em></div>
+  <nav>
+    <a href="/control"><button class="nav-btn">Control</button></a>
+    <a href="/world"><button class="nav-btn">World</button></a>
+    <button class="nav-btn active">The Bar</button>
+  </nav>
+</header>
+<main>
+  <div class="view">
+    <h2>The Bar</h2>
+    <div class="grid two">
+      <div class="card" style="height:460px;display:flex;flex-direction:column">
+        <div class="card-title" style="display:flex;justify-content:space-between">
+          Live Chat
+          <span id="bar-presence" class="badge badge-accent">0 here</span>
+        </div>
+        <div id="bar-messages" style="flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:4px;margin-bottom:10px;padding-right:4px">
+          <div style="color:var(--text-faint);font-size:12px;margin:auto;text-align:center">Connect to start chatting</div>
+        </div>
+        <div style="display:flex;gap:6px">
+          <input type="text" id="bar-input" placeholder="Say something…" style="flex:1"
+            onkeydown="if(event.key==='Enter') sendBar()"/>
+          <button type="button" onclick="sendBar()" style="background:var(--accent-dim);border:1px solid rgba(0,224,255,0.3);color:var(--accent);padding:0.4rem 1rem;font-size:12px;border-radius:6px;cursor:pointer">Send</button>
+        </div>
+      </div>
+      <div>
+        <div class="card" style="margin-bottom:1rem">
+          <div class="card-title">Jukebox</div>
+          <div id="jukebox-status" style="font-size:12px;color:var(--text-muted);margin-bottom:8px">No track playing</div>
+          <div style="display:flex;gap:6px;flex-wrap:wrap">
+            <button class="btn-ghost" onclick="jukeboxAction('play')" style="font-size:11px;padding:4px 12px;border:1px solid var(--border);border-radius:4px;cursor:pointer;background:transparent;color:var(--text-muted)">▶ Play</button>
+            <button class="btn-ghost" onclick="jukeboxAction('stop')" style="font-size:11px;padding:4px 12px;border:1px solid var(--border);border-radius:4px;cursor:pointer;background:transparent;color:var(--text-muted)">■ Stop</button>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-title">Room Presence</div>
+          <div id="bar-roster" style="font-size:12px;color:var(--text-muted)">Connecting…</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</main>
+{% endblock %}
+{% block scripts %}
+<script>
+const hub = new WSHub('/ws/bar', {
+  onOpen:  () => {
+    addMsg('system','Connected to The Bar');
+    window.dispatchEvent(new CustomEvent('pubcast:ws_open'));
+  },
+  onClose: () => addMsg('system','Disconnected'),
+  onEvent: onEv,
+});
+
+function onEv(ev) {
+  window.dispatchEvent(new CustomEvent('pubcast:ws', {detail:ev}));
+  if (ev.type === 'say')      addMsg(ev.sender_id, ev.text);
+  if (ev.type === 'presence') {
+    document.getElementById('bar-presence').textContent = (ev.participants?.length||0) + ' here';
+    const roster = document.getElementById('bar-roster');
+    roster.innerHTML = (ev.participants||[]).map(p=>
+      `<div style="padding:3px 0;border-bottom:1px solid rgba(255,255,255,0.04)">${p.display_name||p.user_id}</div>`
+    ).join('') || 'No one here yet';
+  }
+  if (ev.type === 'unity_event' && ev.name === 'MusicStarted') {
+    document.getElementById('jukebox-status').textContent = '♪ Music playing';
+    document.getElementById('jukebox-status').style.color = 'var(--ok)';
+  }
+  if (ev.type === 'unity_event' && ev.name === 'MusicStopped') {
+    document.getElementById('jukebox-status').textContent = 'No track playing';
+    document.getElementById('jukebox-status').style.color = 'var(--text-muted)';
+  }
+}
+
+function addMsg(sender, text) {
+  const el = document.getElementById('bar-messages');
+  const d = document.createElement('div');
+  d.style.cssText = 'font-size:12px;padding:4px 0;border-bottom:1px solid rgba(255,255,255,0.03)';
+  d.innerHTML = `<span style="color:var(--accent);font-weight:700">${sender}</span> <span style="color:var(--text)">${text}</span>`;
+  el.appendChild(d);
+  el.scrollTop = el.scrollHeight;
+  // Remove first line marketing placeholder
+  const placeholder = el.querySelector('[style*="margin:auto"]');
+  if (placeholder) placeholder.remove();
+}
+
+async function sendBar() {
+  const inp = document.getElementById('bar-input');
+  const text = inp.value.trim();
+  if (!text) return;
+  hub.send({ type: 'say', text });
+  inp.value = '';
+}
+
+async function jukeboxAction(action) {
+  await fetch('/api/state/production', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ jukebox_action: action }),
+  });
+}
+</script>
+{% endblock %}
