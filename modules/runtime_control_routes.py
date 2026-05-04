@@ -6,14 +6,13 @@ PerformanceManager and ChoreoController through stable endpoints expected by the
 panoramic/control-room UI. When a subsystem is unavailable, routes return an
 explicit unavailable payload rather than accidental 404s.
 
-Mount from main.py only after the app has constructed the managers:
-    app.include_router(create_runtime_control_router(
-        performance_manager=performance_manager,
-        choreo_controller=choreo_controller,
-    ))
+It supports either direct manager injection or late lookup from app.state / the
+loaded main module. That keeps main.py surgery optional and lets existing mounted
+routers bridge the frontend safely while the full runtime is reconciled.
 """
 from __future__ import annotations
 
+import sys
 from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, HTTPException, Request
@@ -31,6 +30,23 @@ def _unavailable(name: str) -> Dict[str, Any]:
     return {"status": "unavailable", "available": False, "subsystem": name}
 
 
+def _runtime_from_main(name: str) -> Optional[Any]:
+    main_mod = sys.modules.get("main") or sys.modules.get("__main__")
+    if main_mod is None:
+        return None
+    value = getattr(main_mod, name, None)
+    return value
+
+
+def _resolve_runtime(request: Request, injected: Optional[Any], name: str) -> Optional[Any]:
+    if injected is not None:
+        return injected
+    state_value = getattr(request.app.state, name, None)
+    if state_value is not None:
+        return state_value
+    return _runtime_from_main(name)
+
+
 def create_runtime_control_router(
     *,
     performance_manager: Optional[Any] = None,
@@ -39,69 +55,76 @@ def create_runtime_control_router(
     router = APIRouter(tags=["Runtime Control"])
 
     @router.get("/api/performance/status")
-    async def performance_status():
-        if performance_manager is None:
+    async def performance_status(request: Request):
+        manager = _resolve_runtime(request, performance_manager, "performance_manager")
+        if manager is None:
             return _unavailable("performance_manager")
-        status = performance_manager.status() if hasattr(performance_manager, "status") else {}
+        status = manager.status() if hasattr(manager, "status") else {}
         if isinstance(status, dict):
             return {"status": "ok", "available": True, **status}
         return {"status": "ok", "available": True, "value": status}
 
     @router.post("/api/performance/profile")
     async def set_performance_profile(request: Request):
-        if performance_manager is None:
+        manager = _resolve_runtime(request, performance_manager, "performance_manager")
+        if manager is None:
             return _unavailable("performance_manager")
         body = await _json_dict(request)
         profile = str(body.get("profile") or "").strip().lower()
         if not profile:
             raise HTTPException(status_code=400, detail="profile is required")
         try:
-            snapshot = performance_manager.set_profile(profile)
+            snapshot = manager.set_profile(profile)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {"status": "ok", "available": True, **snapshot}
 
     @router.get("/api/choreo/status")
-    async def choreo_status():
-        if choreo_controller is None:
+    async def choreo_status(request: Request):
+        controller = _resolve_runtime(request, choreo_controller, "choreo_controller")
+        if controller is None:
             return _unavailable("choreo_controller")
-        status = choreo_controller.status() if hasattr(choreo_controller, "status") else {}
+        status = controller.status() if hasattr(controller, "status") else {}
         if isinstance(status, dict):
             return {"status": "ok", "available": True, **status}
         return {"status": "ok", "available": True, "value": status}
 
     @router.get("/api/choreo/actions")
-    async def choreo_actions():
-        if choreo_controller is None:
+    async def choreo_actions(request: Request):
+        controller = _resolve_runtime(request, choreo_controller, "choreo_controller")
+        if controller is None:
             return _unavailable("choreo_controller")
-        actions = choreo_controller.list_actions() if hasattr(choreo_controller, "list_actions") else {}
+        actions = controller.list_actions() if hasattr(controller, "list_actions") else {}
         return {"status": "ok", "available": True, "actions": actions}
 
     @router.get("/api/choreo/constraints")
-    async def get_choreo_constraints():
-        if choreo_controller is None:
+    async def get_choreo_constraints(request: Request):
+        controller = _resolve_runtime(request, choreo_controller, "choreo_controller")
+        if controller is None:
             return _unavailable("choreo_controller")
-        constraints = choreo_controller.get_constraints() if hasattr(choreo_controller, "get_constraints") else {}
+        constraints = controller.get_constraints() if hasattr(controller, "get_constraints") else {}
         return {"status": "ok", "available": True, "constraints": constraints}
 
     @router.post("/api/choreo/constraints")
     async def set_choreo_constraints(request: Request):
-        if choreo_controller is None:
+        controller = _resolve_runtime(request, choreo_controller, "choreo_controller")
+        if controller is None:
             return _unavailable("choreo_controller")
         body = await _json_dict(request)
         patch = body.get("constraints", body)
         if not isinstance(patch, dict):
             raise HTTPException(status_code=400, detail="constraints must be an object")
-        constraints = choreo_controller.set_constraints(patch)
+        constraints = controller.set_constraints(patch)
         return {"status": "ok", "available": True, "constraints": constraints}
 
     @router.post("/api/choreo/cue")
     async def cue_choreo_action(request: Request):
-        if choreo_controller is None:
+        controller = _resolve_runtime(request, choreo_controller, "choreo_controller")
+        if controller is None:
             return _unavailable("choreo_controller")
         body = await _json_dict(request)
         try:
-            payload = await choreo_controller.cue_action(
+            payload = await controller.cue_action(
                 room=str(body.get("room") or "default"),
                 avatar_id=str(body.get("avatar_id") or body.get("avatar") or "").strip(),
                 action=str(body.get("action") or "").strip(),
