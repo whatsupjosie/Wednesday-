@@ -17,6 +17,8 @@ from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, HTTPException, Request
 
+from modules.media_intake_routes import create_media_intake_router
+
 
 async def _json_dict(request: Request) -> Dict[str, Any]:
     try:
@@ -53,6 +55,11 @@ def create_runtime_control_router(
     choreo_controller: Optional[Any] = None,
 ) -> APIRouter:
     router = APIRouter(tags=["Runtime Control"])
+
+    # Mounted here because production_routes already includes this compatibility
+    # router. The media intake router is intentionally non-owning and stores
+    # assets under data/media_intake unless a later full mount injects recording.
+    router.include_router(create_media_intake_router())
 
     @router.get("/api/performance/status")
     async def performance_status(request: Request):
