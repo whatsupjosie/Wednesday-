@@ -1,0 +1,324 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PubCast Avatar Motion Lab</title>
+<style>
+:root {
+  --bg: #0b0b0d;
+  --panel: #151417;
+  --panel-2: #1d1b20;
+  --line: #36323a;
+  --text: #f6f0e6;
+  --muted: #aaa0ac;
+  --gold: #d8ad5d;
+  --teal: #5dd6c7;
+  --green: #78d486;
+  --red: #ef6f6c;
+  --blue: #82a8ff;
+  --mono: Consolas, "Courier New", monospace;
+  --body: "Segoe UI", system-ui, sans-serif;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  min-height: 100vh;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--body);
+}
+a { color: inherit; }
+button, select, input {
+  font: 700 12px var(--mono);
+}
+button, select {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #111114;
+  color: var(--text);
+}
+button {
+  min-height: 38px;
+  padding: 9px 10px;
+  cursor: pointer;
+}
+button:hover { border-color: var(--teal); color: var(--teal); }
+select { min-height: 38px; padding: 8px 9px; }
+.shell {
+  min-height: 100vh;
+  display: grid;
+  grid-template-columns: 260px minmax(0, 1fr) 360px;
+}
+.rail {
+  border-right: 1px solid var(--line);
+  background: #111114;
+  padding: 18px;
+}
+.brand {
+  margin: 0 0 6px;
+  font: 600 20px Georgia, "Times New Roman", serif;
+  color: var(--gold);
+}
+.small {
+  color: var(--muted);
+  font: 12px/1.5 var(--body);
+}
+.nav {
+  display: grid;
+  gap: 8px;
+  margin-top: 22px;
+}
+.nav a {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 9px 10px;
+  text-decoration: none;
+  color: var(--muted);
+  font: 700 12px var(--mono);
+}
+.workspace {
+  min-width: 0;
+  padding: 22px;
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  gap: 18px;
+}
+.topline {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 16px;
+}
+h1 {
+  margin: 0;
+  font-size: 28px;
+  font-weight: 650;
+  letter-spacing: 0;
+}
+.status-pill {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 7px 10px;
+  color: var(--muted);
+  font: 700 11px var(--mono);
+  white-space: nowrap;
+}
+.status-pill.ok { color: var(--green); border-color: rgba(120, 212, 134, .45); }
+.status-pill.bad { color: var(--red); border-color: rgba(239, 111, 108, .45); }
+.controls {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+.control-block {
+  display: grid;
+  gap: 8px;
+}
+.label {
+  color: var(--muted);
+  font: 700 11px var(--mono);
+  text-transform: uppercase;
+}
+.stage {
+  min-height: 360px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 320px;
+  gap: 18px;
+}
+.skeleton {
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  background: linear-gradient(180deg, #111114, #101016);
+  position: relative;
+  overflow: hidden;
+}
+.figure {
+  position: absolute;
+  inset: 26px;
+}
+.bone {
+  position: absolute;
+  border: 1px solid rgba(93, 214, 199, .45);
+  background: rgba(93, 214, 199, .08);
+  color: var(--text);
+  border-radius: 6px;
+  padding: 6px;
+  min-width: 86px;
+  font: 700 11px var(--mono);
+  transition: transform .22s ease, border-color .22s ease, background .22s ease;
+}
+.bone.active {
+  border-color: var(--gold);
+  background: rgba(216, 173, 93, .12);
+}
+.bone small {
+  display: block;
+  color: var(--muted);
+  font-weight: 400;
+  margin-top: 3px;
+}
+.bone.pelvis { left: 43%; top: 52%; }
+.bone.spine { left: 43%; top: 34%; }
+.bone.head { left: 43%; top: 12%; }
+.bone.hand-l { left: 21%; top: 39%; }
+.bone.hand-r { left: 64%; top: 39%; }
+.bone.foot-l { left: 31%; top: 76%; }
+.bone.foot-r { left: 56%; top: 76%; }
+.meter-row {
+  display: grid;
+  grid-template-columns: 120px minmax(0, 1fr);
+  gap: 10px;
+  padding: 9px 0;
+  border-bottom: 1px solid var(--line);
+  font: 12px var(--mono);
+}
+.meter-row strong { color: var(--gold); }
+.meter-row span { color: var(--muted); overflow-wrap: anywhere; }
+.inspector {
+  border-left: 1px solid var(--line);
+  background: var(--panel);
+  padding: 18px;
+  overflow: auto;
+}
+.section {
+  margin-bottom: 22px;
+}
+h2 {
+  margin: 0 0 10px;
+  font-size: 13px;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--gold);
+}
+pre {
+  margin: 0;
+  max-height: 230px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #0d0d11;
+  color: var(--teal);
+  padding: 10px;
+  font: 11px/1.5 var(--mono);
+  white-space: pre-wrap;
+}
+.log {
+  height: 210px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #0d0d11;
+  padding: 10px;
+  color: var(--muted);
+  font: 11px/1.55 var(--mono);
+}
+.log .ok { color: var(--green); }
+.log .bad { color: var(--red); }
+.log .event { color: var(--blue); }
+@media (max-width: 1120px) {
+  .shell { grid-template-columns: 1fr; }
+  .rail, .inspector { border: 0; }
+  .stage { grid-template-columns: 1fr; }
+}
+@media (max-width: 720px) {
+  .controls { grid-template-columns: 1fr; }
+  .topline { display: grid; }
+  .workspace { padding: 16px; }
+}
+</style>
+  <script src="/static/js/pubcast_typing_space_guard.js"></script>
+</head>
+<body>
+<div class="shell">
+  <aside class="rail">
+    <p class="brand">Avatar Motion Lab</p>
+    <p class="small">Manual mocap proof surface for Manny and Sheila. Contract first; renderer polish later.</p>
+    <nav class="nav">
+      <a href="/avatar-walk-test">Walk Proof</a>
+      <a href="/static/control_room.html">Control</a>
+      <a href="/director-switcher">Director</a>
+      <a href="/static/avatar_motion_lab.html">Static File</a>
+    </nav>
+  </aside>
+
+  <main class="workspace">
+    <div class="topline">
+      <div>
+        <h1>Motion Contract Proof</h1>
+        <p class="small">Start mocap, send canned frames, inspect canonical bones, and fire cues.</p>
+      </div>
+      <div id="connectionStatus" class="status-pill">Connecting</div>
+    </div>
+
+    <section class="controls" aria-label="motion controls">
+      <div class="control-block">
+        <label class="label" for="avatarSelect">Avatar</label>
+        <select id="avatarSelect">
+          <option value="manny">Manny</option>
+          <option value="sheila">Sheila</option>
+        </select>
+      </div>
+      <div class="control-block">
+        <span class="label">Mocap</span>
+        <button id="startMocap" type="button">Start Manual Mocap</button>
+      </div>
+      <div class="control-block">
+        <span class="label">Canned Frames</span>
+        <button id="sendManny" type="button">Send Manny Frame</button>
+        <button id="sendSheila" type="button">Send Sheila Frame</button>
+      </div>
+      <div class="control-block">
+        <span class="label">Object Contract</span>
+        <button id="sendInteraction" type="button">Attach Coffee Contract</button>
+      </div>
+    </section>
+
+    <section class="stage" aria-label="mapped skeleton display">
+      <div class="skeleton">
+        <div class="figure">
+          <div class="bone head" data-bone="Head">Head<small>waiting</small></div>
+          <div class="bone spine" data-bone="Spine_01">Spine_01<small>waiting</small></div>
+          <div class="bone pelvis" data-bone="Pelvis">Pelvis<small>waiting</small></div>
+          <div class="bone hand-l" data-bone="Hand_L">Hand_L<small>waiting</small></div>
+          <div class="bone hand-r" data-bone="Hand_R">Hand_R<small>waiting</small></div>
+          <div class="bone foot-l" data-bone="Foot_L">Foot_L<small>waiting</small></div>
+          <div class="bone foot-r" data-bone="Foot_R">Foot_R<small>waiting</small></div>
+        </div>
+      </div>
+      <div>
+        <div class="meter-row"><strong>mocap</strong><span id="mocapState">unknown</span></div>
+        <div class="meter-row"><strong>avatar</strong><span id="activeAvatar">none</span></div>
+        <div class="meter-row"><strong>rig</strong><span id="activeRig">none</span></div>
+        <div class="meter-row"><strong>frames</strong><span id="frameCount">0</span></div>
+        <div class="meter-row"><strong>bridge</strong><span id="bridgeState">not sent yet</span></div>
+        <div class="meter-row"><strong>cue</strong><span id="cueState">none</span></div>
+        <div class="meter-row"><strong>interaction</strong><span id="interactionState">none</span></div>
+        <div class="control-block" style="margin-top:16px">
+          <span class="label">Choreography Cues</span>
+          <button data-cue="walk" type="button">Cue Walk</button>
+          <button data-cue="hold_coffee" type="button">Cue Hold Coffee</button>
+          <button data-cue="work_console" type="button">Cue Work Console</button>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <aside class="inspector">
+    <div class="section">
+      <h2>Latest Avatar Pose</h2>
+      <pre id="poseJson">{}</pre>
+    </div>
+    <div class="section">
+      <h2>Mocap Status</h2>
+      <pre id="statusJson">{}</pre>
+    </div>
+    <div class="section">
+      <h2>Event Log</h2>
+      <div id="eventLog" class="log"></div>
+    </div>
+  </aside>
+</div>
+<script src="/static/js/avatar_motion_lab.js"></script>
+</body>
+</html>

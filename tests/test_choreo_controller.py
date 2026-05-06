@@ -53,6 +53,30 @@ def test_unknown_action_rejected():
     assert "Unknown action" in err
 
 
+def test_interaction_cue_includes_object_interaction_contract():
+    hub = _FakeHub()
+    controller = ChoreoController(hub, tick_hz=20)
+
+    async def _run():
+        return await controller.cue_action(
+            room="studio",
+            avatar_id="manny",
+            action="hold_coffee",
+            props={"state": "active"},
+        )
+
+    payload = asyncio.run(_run())
+    interaction = payload["object_interaction"]
+
+    assert interaction["contract"] == "avatar_object_interaction.v1"
+    assert interaction["avatar_id"] == "manny"
+    assert interaction["action"] == "hold_coffee"
+    assert interaction["object_id"] == "coffee_mug_01"
+    assert interaction["attach_to"] == "Hand_R"
+    assert interaction["state"] == "active"
+    assert hub.events[-1]["payload"]["object_interaction"] == interaction
+
+
 def test_motion_constraints_bound_position():
     hub = _FakeHub()
     controller = ChoreoController(hub)
@@ -85,4 +109,3 @@ def test_constraints_can_be_disabled():
 
     assert avatar.position == [9.0, 9.0, 9.0]
     assert avatar.rotation == [0.0, 720.0, 0.0]
-

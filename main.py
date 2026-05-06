@@ -63,6 +63,7 @@ from modules.governance_routes import create_governance_router
 from modules.avatar_studio_bridge import AvatarStudioBridge, create_avatar_studio_router
 from modules.pubworld_hotspots import create_hotspot_router
 from modules.avatar import load_avatar, save_avatar, list_presets as list_avatar_presets
+from modules.avatar_motion_contract import build_avatar_object_interaction, build_motion_lab_config
 from modules.character_cast import list_cast_characters, get_cast_character
 from modules.feature_flags import alex_little_one_enabled
 from modules.persistence import read_json, write_json, sanitize_filename, unique_child_path
@@ -98,6 +99,7 @@ _HAS_THINKING_CONTEXT = False
 _HAS_ETHEREAL         = False
 _HAS_EVO              = False
 _HAS_VAULT            = False
+_HAS_SECURITY_SPINE   = False
 _HAS_BYOK             = False
 _HAS_PERFORMANCE      = False
 _HAS_CHOREO           = False
@@ -147,6 +149,13 @@ try:
     _HAS_VAULT = True
 except ImportError:
     PubCastVault = None
+
+try:
+    from modules.security_spine_service import SecuritySpineService, create_security_spine_router
+    _HAS_SECURITY_SPINE = True
+except ImportError:
+    SecuritySpineService = None
+    create_security_spine_router = None
 
 try:
     from modules.performance_manager import PerformanceManager
@@ -329,6 +338,7 @@ ethereal_mgr:      Any = None
 avatar_studio:     Any = None
 evo_orchestrator:  Any = None
 vault:             Any = None
+security_spine:    Any = None
 byok_mgr:          Any = None
 performance_manager: Any = None
 choreo_controller: Any = None
@@ -546,7 +556,7 @@ class PubCastContextAdapter:
 @asynccontextmanager
 async def lifespan(application: FastAPI):
     global hub, bot_manager, room_manager, inference, cameras, recording
-    global governance, cricket_keeper, ethereal_mgr, avatar_studio, vault, evo_orchestrator
+    global governance, cricket_keeper, ethereal_mgr, avatar_studio, vault, security_spine, evo_orchestrator
     global byok_mgr, performance_manager, choreo_controller, lighting_engine, lighting_hub_patch
     global surface_manager, studio_control, studio_ws_handler
     global voxel_asset_manager, voxel_studio, voxel_bridge, unity_bridge, mocap, conv_orchestrator
@@ -857,6 +867,19 @@ async def lifespan(application: FastAPI):
     else:
         logger.info("[12/12] Vault — not available")
 
+    # 12a. Security spine status-only registration.
+    # This intentionally does not gate imports/uploads/files unless explicitly wired later.
+    if _HAS_SECURITY_SPINE and SecuritySpineService is not None:
+        try:
+            security_spine = SecuritySpineService(DATA_DIR)
+            application.include_router(create_security_spine_router(security_spine))
+            logger.info("[12a/12] Security spine registered — dormant status only (enabled=%s)",
+                        security_spine.is_enabled())
+        except Exception as exc:
+            logger.warning("[12a/12] Security spine status registration failed: %s", exc)
+    else:
+        logger.info("[12a/12] Security spine — not available")
+
     logger.info("[12b] Doctor — %s", "ready" if _HAS_DOCTOR else "not available")
 
     # ── New subsystems boot ────────────────────────────────────────────────────
@@ -940,7 +963,7 @@ async def lifespan(application: FastAPI):
     # MoCap integration — live motion capture streaming
     if _HAS_MOCAP:
         try:
-            mocap = MocapIntegration()
+            mocap = MocapIntegration(hub=hub, bridge=voxel_bridge)
             logger.info("[20] MoCap integration ready")
         except Exception as exc:
             logger.warning("[20] MoCap integration failed: %s", exc)
@@ -1173,6 +1196,7 @@ async def health():
             "ethereal":           _HAS_ETHEREAL and ethereal_mgr is not None,
             "evo":                _HAS_EVO and evo_orchestrator is not None,
             "vault":              _HAS_VAULT and vault is not None,
+            "security_spine":     security_spine.status() if security_spine else {"installed": _HAS_SECURITY_SPINE, "enabled": False},
             "doctor":             _HAS_DOCTOR,
             # New subsystems
             "pubworld_router":    _HAS_PUBWORLD_ROUTER,
@@ -1465,6 +1489,28 @@ async def choreo_cue_action(request: Request, identity: Dict[str, Any] = Depends
 
 # ─── Performance profile route ─────────────────────────────────────────────────
 
+@app.post("/api/avatar/interaction")
+async def avatar_object_interaction(request: Request):
+    """Normalize and broadcast an avatar-object interaction contract."""
+    body = await _json_dict(request)
+    try:
+        interaction = build_avatar_object_interaction(body)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    if hub and hasattr(hub, "broadcast_system_event"):
+        await hub.broadcast_system_event({
+            "type": "avatar_object_interaction",
+            "payload": interaction,
+        })
+    return {"ok": True, "interaction": interaction}
+
+
+@app.get("/api/avatar/motion-lab")
+async def avatar_motion_lab_config():
+    """Return the shared sample frames and cue vocabulary for the motion lab."""
+    return {"ok": True, **build_motion_lab_config()}
+
+
 @app.get("/api/performance/status")
 async def performance_status():
     """Return the active performance profile and its settings.
@@ -1513,6 +1559,9 @@ async def page_director_switcher(request: Request): return _page("director_switc
 
 @app.get("/avatar-walk-test", include_in_schema=False)
 async def page_avatar_walk_test(request: Request): return _page("avatar_walk_test.html", request)
+
+@app.get("/avatar-motion-lab", include_in_schema=False)
+async def page_avatar_motion_lab(request: Request): return _page("avatar_motion_lab.html", request)
 
 @app.get("/data/avatars/manifest.json", include_in_schema=False)
 async def avatar_manifest_file():
@@ -1950,7 +1999,11 @@ async def mocap_start(request: Request, identity: Dict[str, Any] = Depends(requi
         raise HTTPException(503, "MoCap not available")
     body = await _json_dict(request)
     try:
-        result = await mocap.start(rig_id=body.get("rig_id", "rig-01"))
+        result = await mocap.start(
+            rig_id=body.get("rig_id", "rig-01"),
+            source_url=body.get("source_url"),
+            avatar_id=body.get("avatar_id"),
+        )
         return {"ok": True, "result": result}
     except Exception as exc:
         raise HTTPException(500, str(exc))
@@ -1962,6 +2015,18 @@ async def mocap_stop(identity: Dict[str, Any] = Depends(require_role("mod"))):
     try:
         await mocap.stop()
         return {"ok": True}
+    except Exception as exc:
+        raise HTTPException(500, str(exc))
+
+@app.post("/api/mocap/frame")
+async def mocap_frame(request: Request, identity: Dict[str, Any] = Depends(require_role("mod"))):
+    if mocap is None:
+        raise HTTPException(503, "MoCap not available")
+    body = await _json_dict(request)
+    try:
+        avatar_id = body.pop("avatar_id", None)
+        pose = await mocap.ingest_frame(body, avatar_id=avatar_id)
+        return {"ok": True, "pose": pose}
     except Exception as exc:
         raise HTTPException(500, str(exc))
 

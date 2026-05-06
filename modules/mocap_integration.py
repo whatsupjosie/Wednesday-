@@ -184,20 +184,27 @@ STANDARD_SKELETON = [
 # Avatar mapping (maps mocap joints to avatar bones)
 AVATAR_SKELETON_MAPPING = {
     # Mocap joint name → Avatar bone name
-    "hips": "root",
-    "spine": "spine1",
-    "chest": "spine2",
-    "neck": "neck",
-    "head": "head",
-    "left_shoulder": "l_shoulder",
-    "left_elbow": "l_elbow",
-    "left_wrist": "l_wrist",
-    "right_shoulder": "r_shoulder",
-    "right_elbow": "r_elbow",
-    "right_wrist": "r_wrist",
-    "left_knee": "l_knee",
-    "right_knee": "r_knee",
-    # Add more mappings as needed
+    "hips": "Pelvis",
+    "spine": "Spine_01",
+    "chest": "Spine_03",
+    "neck": "Neck_01",
+    "head": "Head",
+    "left_shoulder": "Clavicle_L",
+    "left_elbow": "LowerArm_L",
+    "left_wrist": "Hand_L",
+    "left_hand": "Hand_L",
+    "right_shoulder": "Clavicle_R",
+    "right_elbow": "LowerArm_R",
+    "right_wrist": "Hand_R",
+    "right_hand": "Hand_R",
+    "left_hip": "Thigh_L",
+    "left_knee": "Calf_L",
+    "left_ankle": "Foot_L",
+    "left_foot": "Ball_L",
+    "right_hip": "Thigh_R",
+    "right_knee": "Calf_R",
+    "right_ankle": "Foot_R",
+    "right_foot": "Ball_R",
 }
 
 
@@ -357,6 +364,7 @@ class MocapStreamManager:
         # Avatar mapping
         self._active_avatar_id: Optional[str] = None
         self._skeleton_mapping = AVATAR_SKELETON_MAPPING.copy()
+        self._latest_avatar_pose: Dict[str, Any] = {}
         
         # Recording integration
         self._auto_start_recording = self.config.get("auto_start_recording", True)
@@ -505,6 +513,12 @@ class MocapStreamManager:
         
         # TODO: Send to avatar system
         # await self.avatar_system.update_skeleton(avatar_id, avatar_bones)
+        self._latest_avatar_pose = {
+            "avatar_id": avatar_id,
+            "rig_id": frame.rig_id,
+            "ts": frame.timestamp,
+            "bones": avatar_bones,
+        }
         
         logger.debug(f"Applied frame to avatar {avatar_id}: {len(avatar_bones)} bones")
     
@@ -533,8 +547,8 @@ class MocapStreamManager:
             }
         }
         
-        # TODO: Hub broadcast
-        # await self.hub.broadcast("mocap", message)
+        if hasattr(self.hub, "broadcast_system_event"):
+            await self.hub.broadcast_system_event(message)
     
     # ─────────────────────────────────────────────
     # AVATAR CONTROL
@@ -577,3 +591,125 @@ class MocapStreamManager:
     def get_frame_buffer(self, max_frames: int = 60) -> List[MocapFrame]:
         """Get recent frames from buffer"""
         return self._frame_buffer[-max_frames:]
+
+
+class MocapIntegration:
+    """
+    App-facing mocap facade used by main.py.
+
+    It keeps the stream manager available for real UDP/WebSocket sources, while
+    also exposing a deterministic frame ingestion path for tests, tools, and the
+    control-room UI. The ingested pose is mapped to canonical PubCast skeleton
+    bones before it is broadcast or sent toward the renderer bridge.
+    """
+
+    def __init__(
+        self,
+        hub: Optional[Any] = None,
+        bridge: Optional[Any] = None,
+        config: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        self.hub = hub
+        self.bridge = bridge
+        self.config = config or {}
+        self.manager = MocapStreamManager(hub=hub, pete=None, config=self.config)
+        self._source_url: Optional[str] = None
+        self._latest_pose: Optional[Dict[str, Any]] = None
+        self._default_avatar_id = self.config.get("avatar_id", "manny")
+
+    async def start(self, rig_id: str = "rig-01", source_url: Optional[str] = None, avatar_id: Optional[str] = None) -> Dict[str, Any]:
+        """Start mocap. With no source_url, prepare for manual frame ingestion."""
+        self.manager.current_rig_id = rig_id
+        self.manager.set_active_avatar(avatar_id or self._default_avatar_id)
+        self._source_url = source_url
+
+        if source_url:
+            started = await self.manager.start_stream(source_url)
+        else:
+            self.manager.status = MocapStreamStatus.STREAMING
+            started = True
+
+        return {
+            "started": started,
+            "rig_id": rig_id,
+            "avatar_id": self.manager._active_avatar_id,
+            "source_url": source_url,
+            "mode": "stream" if source_url else "manual",
+        }
+
+    async def stop(self) -> None:
+        """Stop active mocap stream or manual-ingest session."""
+        if self.manager.receiver:
+            await self.manager.stop_stream()
+        else:
+            self.manager.status = MocapStreamStatus.DISCONNECTED
+            self.manager._frame_buffer.clear()
+            self.manager._recording_started = False
+        self._source_url = None
+
+    async def ingest_frame(self, data: Dict[str, Any], avatar_id: Optional[str] = None) -> Dict[str, Any]:
+        """Ingest one mocap frame and return the mapped avatar pose."""
+        if avatar_id:
+            self.manager.set_active_avatar(avatar_id)
+        elif not self.manager._active_avatar_id:
+            self.manager.set_active_avatar(self._default_avatar_id)
+
+        frame_data = dict(data or {})
+        if "rigId" not in frame_data and self.manager.current_rig_id:
+            frame_data["rigId"] = self.manager.current_rig_id
+
+        frame = MocapFrame.from_dict(frame_data)
+        await self.manager._on_frame_received(frame)
+        pose = self.map_frame_to_avatar(frame, self.manager._active_avatar_id or self._default_avatar_id)
+        self._latest_pose = pose
+        self.manager._latest_avatar_pose = pose
+
+        bridge_sent = self._send_pose_to_bridge(pose)
+        if self.hub and hasattr(self.hub, "broadcast_system_event"):
+            await self.hub.broadcast_system_event({
+                "type": "avatar_pose",
+                "payload": {**pose, "bridge_sent": bridge_sent},
+            })
+
+        return {**pose, "bridge_sent": bridge_sent}
+
+    def map_frame_to_avatar(self, frame: MocapFrame, avatar_id: str) -> Dict[str, Any]:
+        """Map a mocap frame into the canonical avatar bone payload."""
+        bones: Dict[str, Any] = {}
+        for mocap_joint, avatar_bone in self.manager._skeleton_mapping.items():
+            joint = frame.joints.get(mocap_joint)
+            if joint is None:
+                continue
+            bones[avatar_bone] = {
+                "position": [joint.x, joint.y, joint.z],
+                "rotation": [joint.qx, joint.qy, joint.qz, joint.qw] if joint.qx is not None else None,
+                "confidence": joint.confidence,
+            }
+        return {
+            "avatar_id": avatar_id,
+            "rig_id": frame.rig_id,
+            "ts": frame.timestamp,
+            "frame_number": frame.frame_number,
+            "quality": frame.quality.value,
+            "bones": bones,
+        }
+
+    def _send_pose_to_bridge(self, pose: Dict[str, Any]) -> bool:
+        """Send mapped motion to the renderer bridge when it is available."""
+        if not self.bridge or not hasattr(self.bridge, "send_command"):
+            return False
+        try:
+            return bool(self.bridge.send_command("MOTION_UPDATE", pose, priority=1))
+        except Exception as exc:
+            logger.warning("Mocap bridge send failed: %s", exc)
+            return False
+
+    def get_status(self) -> Dict[str, Any]:
+        """Get app-facing mocap status."""
+        status = self.manager.get_status()
+        status.update({
+            "source_url": self._source_url,
+            "latest_pose": self._latest_pose,
+            "mapping": self.manager._skeleton_mapping.copy(),
+        })
+        return status

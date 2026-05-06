@@ -10,6 +10,7 @@ import time
 from dataclasses import asdict, dataclass, field
 from typing import Any, Dict, List, Optional
 
+from .avatar_motion_contract import build_avatar_object_interaction
 from .choreography_runtime import Choreography, ChoreographyStep
 
 DEFAULT_ACTIONS: Dict[str, Dict[str, Any]] = {
@@ -152,6 +153,8 @@ class ChoreoController:
             raise ValueError("avatar_id is required")
 
         action_cfg = self._actions[name]
+        resolved_duration = max(0.2, float(duration or action_cfg["duration"]))
+        cue_props = dict(props or {})
         payload = {
             "room": room,
             "avatar_id": avatar_id,
@@ -159,11 +162,23 @@ class ChoreoController:
             "label": action_cfg["label"],
             "category": action_cfg["category"],
             "intensity": max(0.1, min(3.0, float(intensity or 1.0))),
-            "duration": max(0.2, float(duration or action_cfg["duration"])),
-            "props": props or {},
+            "duration": resolved_duration,
+            "props": cue_props,
             "constraints_enabled": self._constraints.enabled,
             "sent_at": time.time(),
         }
+        if action_cfg["category"] == "interaction":
+            try:
+                payload["object_interaction"] = build_avatar_object_interaction({
+                    "avatar_id": avatar_id,
+                    "action": name,
+                    "object_id": cue_props.get("object_id"),
+                    "attach_to": cue_props.get("attach_to"),
+                    "duration": cue_props.get("duration", resolved_duration),
+                    "state": cue_props.get("state", "queued"),
+                }, now=payload["sent_at"])
+            except ValueError:
+                pass
         await self._hub.broadcast_system_event({"type": "avatar_action_cue", "payload": payload})
         return payload
 

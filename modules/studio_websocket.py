@@ -83,6 +83,23 @@ class StudioWebSocketHandler:
         
         logger.info(f"📡 WebSocket disconnected ({len(self._active_connections)} remaining)")
     
+    async def handle(self, websocket: WebSocket):
+        """Own a Studio Control WebSocket connection from accept through disconnect.
+
+        Runtime routes call this single handler for both /studio/ws and the
+        compatibility /ws/studio path used by older static pages.
+        """
+        await self.connect(websocket)
+        try:
+            while True:
+                data = await websocket.receive_json()
+                await self.handle_message(websocket, data)
+        except WebSocketDisconnect:
+            await self.disconnect(websocket)
+        except Exception as exc:
+            logger.error("Studio WebSocket connection failed: %s", exc, exc_info=True)
+            await self.disconnect(websocket)
+
     async def handle_message(self, websocket: WebSocket, data: Dict[str, Any]):
         """Route incoming message to appropriate handler"""
         command = data.get('command')
