@@ -44,6 +44,50 @@ class TestHub(unittest.TestCase):
         updated = self.hub.update_production_state({"on_air": True})
         self.assertTrue(updated["on_air"])
 
+    def test_disconnect_removes_empty_room(self):
+        from starlette.websockets import WebSocketState
+
+        class FakeWebSocket:
+            application_state = WebSocketState.DISCONNECTED
+
+        ws = FakeWebSocket()
+        self.hub.rooms["main"] = {ws}
+
+        asyncio.run(self.hub.disconnect(ws, "main"))
+
+        self.assertNotIn("main", self.hub.rooms)
+
+    def test_broadcast_removes_empty_room_after_dead_socket_prune(self):
+        from starlette.websockets import WebSocketState
+
+        class FakeWebSocket:
+            application_state = WebSocketState.DISCONNECTED
+
+        ws = FakeWebSocket()
+        self.hub.rooms["main"] = {ws}
+
+        asyncio.run(self.hub._broadcast("main", {"type": "presence", "payload": {}}))
+
+        self.assertNotIn("main", self.hub.rooms)
+
+    def test_room_websocket_cannot_mutate_production_state(self):
+        class FakeWebSocket:
+            def __init__(self):
+                self.sent = []
+
+            async def send_text(self, text):
+                self.sent.append(json.loads(text))
+
+        ws = FakeWebSocket()
+
+        asyncio.run(self.hub.handle_message(ws, "main", json.dumps({
+            "type": "production_state",
+            "payload": {"on_air": True},
+        })))
+
+        self.assertFalse(self.hub.get_production_state().get("on_air", False))
+        self.assertEqual(ws.sent[0]["type"], "error")
+
 
 class TestBotManager(unittest.TestCase):
     def setUp(self):
@@ -87,6 +131,43 @@ class TestCameras(unittest.TestCase):
         from modules.cameras import create_default_cameras
         cm = create_default_cameras()
         self.assertFalse(cm.set_program_source("nonexistent"))
+
+
+class TestStudioControl(unittest.TestCase):
+    def setUp(self):
+        self.td = Path(tempfile.mkdtemp())
+
+    def tearDown(self):
+        shutil.rmtree(self.td, ignore_errors=True)
+
+    def test_studio_control_broadcast_sends_json_and_prunes_dead_clients(self):
+        from modules.studio_control import StudioControl
+
+        class JsonClient:
+            def __init__(self):
+                self.messages = []
+
+            async def send_json(self, message):
+                self.messages.append(message)
+
+        class DeadClient:
+            async def send_json(self, message):
+                raise RuntimeError("gone")
+
+        async def run():
+            control = StudioControl(hub=None, pete=None, data_dir=self.td)
+            live = JsonClient()
+            dead = DeadClient()
+            control.register_ws_client(live)
+            control.register_ws_client(live)
+            control.register_ws_client(dead)
+
+            await control._broadcast({"type": "state_update", "state": "IDLE"})
+
+            self.assertEqual(live.messages, [{"type": "state_update", "state": "IDLE"}])
+            self.assertEqual(control._ws_clients, [live])
+
+        asyncio.run(run())
 
 
 class TestRecording(unittest.TestCase):
@@ -238,6 +319,118 @@ class TestModeResolver(unittest.TestCase):
         mr.set_override(ShowMode.REHEARSAL)
         self.assertEqual(mr.current_mode, ShowMode.REHEARSAL)
         mr.clear_override()
+
+
+class TestVoxelBridgePolicy(unittest.TestCase):
+    def setUp(self):
+        self.td = Path(tempfile.mkdtemp())
+
+    def tearDown(self):
+        shutil.rmtree(self.td, ignore_errors=True)
+
+    def test_holding_bridge_refuses_commands_without_background_queue(self):
+        from modules.bridge_bulletproof import VoxelBridge
+
+        bridge = VoxelBridge(self.td)
+        try:
+            self.assertFalse(bridge.send_command("LOAD_SCENE", {"scene": "unit"}))
+            self.assertEqual(bridge.get_metrics()["queue_depth"], 0)
+        finally:
+            bridge.close()
+
+    def test_low_profile_keeps_voxel_bridge_cold(self):
+        from modules.performance_manager import DEFAULT_POLICY
+
+        low = DEFAULT_POLICY["profiles"]["low"]
+        high = DEFAULT_POLICY["profiles"]["high"]
+        self.assertFalse(low["voxel_bridge_autoconnect"])
+        self.assertFalse(low["voxel_bridge_allow_emergency_fallback"])
+        self.assertTrue(high["voxel_bridge_autoconnect"])
+
+
+class TestAIResourcePolicy(unittest.TestCase):
+    def setUp(self):
+        self.td = Path(tempfile.mkdtemp())
+
+    def tearDown(self):
+        shutil.rmtree(self.td, ignore_errors=True)
+
+    def test_low_profile_keeps_architect_cold_at_startup(self):
+        from modules.performance_manager import init_performance_manager
+        import modules.llm_orchestrator as orchestrator_module
+
+        mgr = init_performance_manager(data_dir=self.td, policy_path=Path("missing-policy.json"))
+        mgr.active_profile = "low"
+
+        class MockResponse:
+            status_code = 503
+
+        class MockClient:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return None
+
+            async def get(self, *args, **kwargs):
+                return MockResponse()
+
+        old_loader = orchestrator_module._load_architect
+        old_client = orchestrator_module.httpx.AsyncClient
+        orchestrator_module._load_architect = lambda: (_ for _ in ()).throw(AssertionError("architect should stay cold"))
+        orchestrator_module.httpx.AsyncClient = lambda **kwargs: MockClient()
+        try:
+            orchestrator = orchestrator_module.LLMOrchestrator()
+            asyncio.run(orchestrator.startup())
+            self.assertFalse(orchestrator._architect_enabled)
+            self.assertFalse(orchestrator._arch_ok)
+        finally:
+            orchestrator_module._load_architect = old_loader
+            orchestrator_module.httpx.AsyncClient = old_client
+
+
+class TestTimelineRoutes(unittest.TestCase):
+    def setUp(self):
+        self.td = Path(tempfile.mkdtemp())
+
+    def tearDown(self):
+        shutil.rmtree(self.td, ignore_errors=True)
+
+    def test_routes_use_timeline_player_contract(self):
+        from modules import timeline_routes
+        from modules.timeline import EventType, TimelineDefinition, TimelineEvent
+
+        timeline_routes.init_timeline_system(self.td)
+        timeline = TimelineDefinition(
+            name="unit_timeline",
+            duration=1.0,
+            events=[TimelineEvent(t=0.1, event_type=EventType.CUSTOM, params={"ok": True})],
+        )
+        timeline.save(self.td / "timelines" / "unit_timeline.json")
+
+        async def run():
+            loaded = await timeline_routes.load_timeline(
+                timeline_routes.TimelineLoadRequest(name="unit_timeline"),
+                identity={},
+            )
+            self.assertEqual(loaded["loaded"], "unit_timeline")
+
+            playing = await timeline_routes.play(identity={})
+            self.assertEqual(playing["state"], "running")
+
+            seeked = await timeline_routes.seek(0.2, identity={})
+            self.assertEqual(seeked["seeked_to"], 0.2)
+
+            paused = await timeline_routes.pause(identity={})
+            self.assertGreaterEqual(paused["elapsed"], 0.0)
+
+            resumed = await timeline_routes.resume(identity={})
+            self.assertEqual(resumed["state"], "running")
+
+            stopped = await timeline_routes.stop(identity={})
+            self.assertEqual(stopped["action"], "stopped")
+
+        asyncio.run(run())
 
 
 class TestCharacterEngine(unittest.TestCase):

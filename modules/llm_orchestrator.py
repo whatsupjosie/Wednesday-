@@ -346,6 +346,9 @@ class LLMOrchestrator:
         self._latency_sum_ms    = 0.0
         self._perf = None
         self._active_profile = "medium"
+        self._studio_keep_alive = _OLLAMA_KEEP_ALIVE
+        self._architect_keep_alive = _ARCH_KEEP_ALIVE
+        self._studio_warmup_enabled = True
 
         self._refresh_policy()
 
@@ -364,6 +367,15 @@ class LLMOrchestrator:
         self._active_profile = str(getattr(perf, "active_profile", "medium"))
 
         studio_model = str(perf.get("studio_model", self._studio_model) or self._studio_model)
+        studio_keep_alive = str(
+            perf.get("studio_keep_alive", perf.get("studio_keepalive", self._studio_keep_alive))
+            or self._studio_keep_alive
+        )
+        architect_keep_alive = str(
+            perf.get("architect_keep_alive", perf.get("architect_keepalive", self._architect_keep_alive))
+            or self._architect_keep_alive
+        )
+        studio_warmup_enabled = bool(perf.get("studio_warmup_enabled", self._studio_warmup_enabled))
         architect_timeout = float(perf.get("architect_timeout_s", self._architect_timeout_s))
         architect_enabled = bool(perf.get("architect_enabled", True))
         max_concurrency = max(1, int(perf.get("architect_max_concurrency", 1)))
@@ -371,6 +383,9 @@ class LLMOrchestrator:
         breaker_cooldown = max(1.0, float(perf.get("breaker_cooldown_s", _BREAKER_COOL)))
 
         self._studio_model = studio_model
+        self._studio_keep_alive = studio_keep_alive
+        self._architect_keep_alive = architect_keep_alive
+        self._studio_warmup_enabled = studio_warmup_enabled
         self._architect_timeout_s = architect_timeout
         self._architect_enabled = architect_enabled
 
@@ -405,16 +420,18 @@ class LLMOrchestrator:
         )
 
         # Architect probe â€” lazy load, don't block boot
-        self._arch_ok = _load_architect()
+        self._arch_ok = _load_architect() if self._architect_enabled else False
         logger.info(
             "Orchestrator: Architect â€” %s  (%s)",
-            "AVAILABLE" if self._arch_ok else "UNAVAILABLE",
+            "DISABLED BY PROFILE" if not self._architect_enabled else ("AVAILABLE" if self._arch_ok else "UNAVAILABLE"),
             _ARCH_PATH or _ARCH_MODEL or "not configured",
         )
 
-        # Warm up Studio in the background so cold model load never blocks PubCast boot.
-        if self._studio_ok:
+        # Warmup is profile-controlled so weaker machines do not pin memory at boot.
+        if self._studio_ok and self._studio_warmup_enabled:
             asyncio.create_task(self._warm_studio())
+        elif self._studio_ok:
+            logger.info("Orchestrator: Studio warmup disabled by performance profile")
 
     async def _warm_studio(self) -> None:
         try:
@@ -425,7 +442,7 @@ class LLMOrchestrator:
                         "model": self._studio_model,
                         "prompt": "",
                         "stream": False,
-                        "keep_alive": _OLLAMA_KEEP_ALIVE,
+                        "keep_alive": self._studio_keep_alive,
                         "options": {"num_ctx": 2048, "num_predict": 1},
                     },
                 )
@@ -526,7 +543,7 @@ class LLMOrchestrator:
                         "model": model_name,
                         "messages": messages,
                         "stream": False,
-                        "keep_alive": _OLLAMA_KEEP_ALIVE,
+                        "keep_alive": self._studio_keep_alive,
                         "options": {"temperature": temperature, "num_ctx": 2048, "num_predict": max_tokens},
                     },
                 )
@@ -587,7 +604,7 @@ class LLMOrchestrator:
                     "model": _ARCH_MODEL,
                     "messages": messages,
                     "stream": False,
-                    "keep_alive": _ARCH_KEEP_ALIVE,
+                    "keep_alive": self._architect_keep_alive,
                     "options": {
                         "temperature": temperature,
                         "num_ctx": _ARCH_CTX,
@@ -765,12 +782,14 @@ class LLMOrchestrator:
                 "provider":  "ollama",
                 "host":      _OLLAMA_HOST,
                 "model":     self._studio_model,
+                "keep_alive": self._studio_keep_alive,
+                "warmup_enabled": self._studio_warmup_enabled,
                 "calls":     self._studio_calls,
             },
             "architect": {
                 "available":   self._arch_ok,
                 "model":       _ARCH_PATH or _ARCH_MODEL or None,
-                "keep_alive":  _ARCH_KEEP_ALIVE,
+                "keep_alive":  self._architect_keep_alive,
                 "enabled":     self._architect_enabled,
                 "timeout_s":   self._architect_timeout_s,
                 "calls":       self._arch_calls,

@@ -510,7 +510,8 @@ class StudioControl:
     
     def register_ws_client(self, client: Any) -> None:
         """Register WebSocket client for real-time updates"""
-        self._ws_clients.append(client)
+        if client not in self._ws_clients:
+            self._ws_clients.append(client)
         logger.info(f"📡 WebSocket client registered ({len(self._ws_clients)} total)")
     
     def unregister_ws_client(self, client: Any) -> None:
@@ -560,8 +561,26 @@ class StudioControl:
         if not self._ws_clients:
             return
         
-        # TODO: Implement actual WebSocket send
-        # For now, just log
+        disconnected: List[Any] = []
+        for client in list(self._ws_clients):
+            try:
+                send_json = getattr(client, "send_json", None)
+                if callable(send_json):
+                    await send_json(message)
+                    continue
+
+                send_text = getattr(client, "send_text", None)
+                if callable(send_text):
+                    await send_text(json.dumps(message))
+                    continue
+
+                disconnected.append(client)
+            except Exception as exc:
+                logger.warning("Studio Control WebSocket broadcast failed: %s", exc)
+                disconnected.append(client)
+
+        for client in disconnected:
+            self.unregister_ws_client(client)
         logger.debug(f"📡 Broadcasting: {message['type']}")
     
     async def start_preflight(self, room: str = "studio") -> Dict[str, Any]:

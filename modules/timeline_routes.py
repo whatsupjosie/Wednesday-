@@ -79,16 +79,21 @@ async def _dispatch_event(event_type: EventType, params: dict):
         except Exception as e:
             logger.error(f"Handler error for {event_type.value}: {e}")
 
-# Wire player to dispatcher
-player.register_handler(EventType.CAMERA, lambda p: _dispatch_event(EventType.CAMERA, p))
-player.register_handler(EventType.LIGHTING, lambda p: _dispatch_event(EventType.LIGHTING, p))
-player.register_handler(EventType.CHAT, lambda p: _dispatch_event(EventType.CHAT, p))
-player.register_handler(EventType.RECORD, lambda p: _dispatch_event(EventType.RECORD, p))
-player.register_handler(EventType.ENTRANCE, lambda p: _dispatch_event(EventType.ENTRANCE, p))
-player.register_handler(EventType.ENVIRONMENT, lambda p: _dispatch_event(EventType.ENVIRONMENT, p))
-player.register_handler(EventType.WALK, lambda p: _dispatch_event(EventType.WALK, p))
-player.register_handler(EventType.AUDIO, lambda p: _dispatch_event(EventType.AUDIO, p))
-player.register_handler(EventType.CUSTOM, lambda p: _dispatch_event(EventType.CUSTOM, p))
+def _dispatching_handler(event_type: EventType):
+    async def handler(event):
+        await _dispatch_event(event_type, event.params)
+    return handler
+
+# Wire player to dispatcher.
+player.register_handler(EventType.CAMERA, _dispatching_handler(EventType.CAMERA))
+player.register_handler(EventType.LIGHTING, _dispatching_handler(EventType.LIGHTING))
+player.register_handler(EventType.CHAT, _dispatching_handler(EventType.CHAT))
+player.register_handler(EventType.RECORD, _dispatching_handler(EventType.RECORD))
+player.register_handler(EventType.ENTRANCE, _dispatching_handler(EventType.ENTRANCE))
+player.register_handler(EventType.ENVIRONMENT, _dispatching_handler(EventType.ENVIRONMENT))
+player.register_handler(EventType.WALK, _dispatching_handler(EventType.WALK))
+player.register_handler(EventType.AUDIO, _dispatching_handler(EventType.AUDIO))
+player.register_handler(EventType.CUSTOM, _dispatching_handler(EventType.CUSTOM))
 
 # ═══════════════════════════════════════════════════════════════════════════
 # API ROUTES
@@ -164,10 +169,12 @@ async def load_timeline(req: TimelineLoadRequest, identity: Dict[str, Any] = Dep
 @router.post("/play")
 async def play(identity: Dict[str, Any] = Depends(require_role("mod"))):
     """Start timeline playback."""
-    if player.state == TimelineState.IDLE:
+    if not player._timeline:
         raise HTTPException(400, "No timeline loaded")
     
-    player.play()
+    ok = await player.start()
+    if not ok:
+        raise HTTPException(400, "Timeline is already running or cannot start")
     logger.info("Timeline playback started")
     return {"action": "playing", "state": player.state.value}
 
@@ -177,7 +184,7 @@ async def pause(identity: Dict[str, Any] = Depends(require_role("mod"))):
     if player.state != TimelineState.RUNNING:
         raise HTTPException(400, "Timeline not running")
     
-    player.pause()
+    await player.pause()
     logger.info("Timeline playback paused")
     return {"action": "paused", "elapsed": player.elapsed}
 
@@ -187,14 +194,14 @@ async def resume(identity: Dict[str, Any] = Depends(require_role("mod"))):
     if player.state != TimelineState.PAUSED:
         raise HTTPException(400, "Timeline not paused")
     
-    player.resume()
+    await player.resume()
     logger.info("Timeline playback resumed")
     return {"action": "resumed", "state": player.state.value}
 
 @router.post("/stop")
 async def stop(identity: Dict[str, Any] = Depends(require_role("mod"))):
     """Stop timeline playback."""
-    player.stop()
+    await player.stop()
     logger.info("Timeline playback stopped")
     return {"action": "stopped"}
 
@@ -207,7 +214,8 @@ async def seek(time: float, identity: Dict[str, Any] = Depends(require_role("mod
     if time < 0 or time > player._timeline.duration:
         raise HTTPException(400, f"Time must be 0-{player._timeline.duration}")
     
-    player.seek(time)
+    if not player.seek(time):
+        raise HTTPException(400, "Unable to seek timeline")
     logger.info(f"Seeked to {time}s")
     return {"seeked_to": time, "elapsed": player.elapsed}
 

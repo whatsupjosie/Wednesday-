@@ -20,17 +20,22 @@ from typing import Any, Dict, Optional
 from .persistence import read_json, write_json
 
 
-DEFAULT_PROFILE = "medium"
+DEFAULT_PROFILE = "low"
 DEFAULT_POLICY: Dict[str, Any] = {
     "version": 1,
     "default_profile": DEFAULT_PROFILE,
     "profiles": {
         "low": {
-            "description": "Maximum stability for weak hardware or heavy load.",
+            "description": "Gentle Saver: maximum stability for weak hardware or heavy load.",
             "stage_target_fps": 20,
             "choreo_tick_hz": 20,
             "stage_static_fx": True,
+            "studio_warmup_enabled": False,
+            "studio_keep_alive": "30s",
+            "voxel_bridge_autoconnect": False,
+            "voxel_bridge_allow_emergency_fallback": False,
             "architect_enabled": False,
+            "architect_keep_alive": "0",
             "architect_max_concurrency": 1,
             "architect_timeout_s": 6,
             "breaker_threshold": 2,
@@ -42,7 +47,12 @@ DEFAULT_POLICY: Dict[str, Any] = {
             "stage_target_fps": 35,
             "choreo_tick_hz": 30,
             "stage_static_fx": False,
+            "studio_warmup_enabled": False,
+            "studio_keep_alive": "2m",
+            "voxel_bridge_autoconnect": False,
+            "voxel_bridge_allow_emergency_fallback": True,
             "architect_enabled": True,
+            "architect_keep_alive": "0",
             "architect_max_concurrency": 1,
             "architect_timeout_s": 12,
             "breaker_threshold": 3,
@@ -54,7 +64,12 @@ DEFAULT_POLICY: Dict[str, Any] = {
             "stage_target_fps": 60,
             "choreo_tick_hz": 45,
             "stage_static_fx": False,
+            "studio_warmup_enabled": True,
+            "studio_keep_alive": "10m",
+            "voxel_bridge_autoconnect": True,
+            "voxel_bridge_allow_emergency_fallback": True,
             "architect_enabled": True,
+            "architect_keep_alive": "0",
             "architect_max_concurrency": 1,
             "architect_timeout_s": 16,
             "breaker_threshold": 5,

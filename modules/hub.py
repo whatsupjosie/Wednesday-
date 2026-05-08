@@ -54,13 +54,35 @@ class Hub:
         # announce presence
         await self._broadcast(room, {"type": "presence", "payload": {"room": room, "count": len(self.rooms.get(room, []))}})
 
-    async def disconnect(self, ws: WebSocket, room: str):
+    async def disconnect(self, ws, room: str):
+        """
+        Remove a websocket from a room safely.
+
+        This is intentionally idempotent: browsers can close/reload/navigate
+        while the server is also cleaning up, and Starlette/Uvicorn will raise
+        if we try to send websocket.close after the close handshake already
+        completed.
+        """
+        connections = self.rooms.get(room)
+
+        if connections and ws in connections:
+            connections.remove(ws)
+
+        if connections is not None and not connections:
+            self.rooms.pop(room, None)
+
         try:
-            self.rooms.get(room, set()).discard(ws)
-        finally:
-            await self._broadcast(room, {"type": "presence", "payload": {"room": room, "count": len(self.rooms.get(room, []))}})
-            if ws.application_state == WebSocketState.CONNECTED:
+            if getattr(ws, "application_state", None) != WebSocketState.DISCONNECTED:
                 await ws.close()
+        except RuntimeError as exc:
+            msg = str(exc)
+            already_closed = (
+                "Unexpected ASGI message 'websocket.close'" in msg
+                or "after sending 'websocket.close'" in msg
+                or "response already completed" in msg
+            )
+            if not already_closed:
+                raise
 
     async def broadcast_system_event(self, event: Dict[str, Any]):
         for room, conns in self.rooms.items():
@@ -94,9 +116,10 @@ class Hub:
             # extension point for invites / cues
             await self._broadcast(room, {"type": "signal", "payload": data.get("payload", {})})
         elif typ == "production_state":
-            # allow control room to push updates via ws (UI convenience)
-            updated = self.update_production_state(data.get("payload", {}))
-            await self.broadcast_system_event({"type": "production_state", "payload": updated})
+            await ws.send_text(json.dumps({
+                "type": "error",
+                "payload": {"msg": "production_state updates require the protected HTTP route"},
+            }))
         else:
             # echo unknown
             await ws.send_text(json.dumps({"type": "error", "payload": {"msg": "unknown type"}}))
@@ -113,6 +136,8 @@ class Hub:
                 dead.append(ws)
         for ws in dead:
             self.rooms.get(room, set()).discard(ws)
+        if room in self.rooms and not self.rooms[room]:
+            self.rooms.pop(room, None)
 
     def _log_path(self, room: str) -> Path:
         logs_dir = self.data_dir / "logs"

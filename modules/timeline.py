@@ -94,6 +94,20 @@ class TimelinePlayer:
         if self._state==TimelineState.RUNNING: self._state=TimelineState.PAUSED; self._pause_time=time.time()
     async def resume(self):
         if self._state==TimelineState.PAUSED: self._pause_offset+=time.time()-self._pause_time; self._state=TimelineState.RUNNING
+    def seek(self, position: float):
+        if not self._timeline:
+            return False
+        position=max(0.0,min(float(position),self._timeline.duration))
+        now=time.time()
+        self._pause_offset=0
+        self._start_time=now-position
+        if self._state==TimelineState.PAUSED:
+            self._pause_time=now
+        for e in self._timeline.events:
+            e.fired=e.t<=position
+            e.fired_at=e.t if e.fired else None
+            e.error=None
+        return True
     def status(self):
         return {"state":self._state.value,"timeline":self._timeline.name if self._timeline else None,
                 "elapsed":round(self.elapsed,2),"progress":round(self.progress,3),

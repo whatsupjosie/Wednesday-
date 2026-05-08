@@ -32,6 +32,7 @@ Rear View Foresight LLC — Feic Mo Chroí — 2026
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import logging
 import os
@@ -92,6 +93,14 @@ from modules import alex_routes, auth_routes, userdb, auth as auth_module
 from modules.route_security import auth_enforced, current_identity, bound_actor, require_role
 from modules.timeline_routes import register_timeline_handler
 from modules.timeline import EventType
+
+try:
+    from runtime.boot_sequence import attach_spine, install_spine_routes
+    _HAS_RUNTIME_SPINE = True
+except Exception:
+    attach_spine = None
+    install_spine_routes = None
+    _HAS_RUNTIME_SPINE = False
 
 # ─── Optional modules — every import guarded; server boots regardless ─────────
 _HAS_CRICKET          = False
@@ -158,10 +167,11 @@ except ImportError:
     create_security_spine_router = None
 
 try:
-    from modules.performance_manager import PerformanceManager
+    from modules.performance_manager import PerformanceManager, init_performance_manager
     _HAS_PERFORMANCE = True
 except ImportError:
     PerformanceManager = None
+    init_performance_manager = None
 
 try:
     from modules.choreography_controller import ChoreoController as ChoreographyController
@@ -339,6 +349,7 @@ avatar_studio:     Any = None
 evo_orchestrator:  Any = None
 vault:             Any = None
 security_spine:    Any = None
+pubcast_spine:     Any = None
 byok_mgr:          Any = None
 performance_manager: Any = None
 choreo_controller: Any = None
@@ -390,6 +401,21 @@ def _ensure_default_voxel_asset_library(data_dir: Path) -> Path:
     library_path.write_text(json.dumps(default_library, indent=2), encoding="utf-8")
     logger.info("[INIT] Created default voxel asset library at %s", library_path)
     return library_path
+
+
+async def _emit_spine_event(event_type: str, payload: Dict[str, Any], *, source: str = "main"):
+    """Emit into the runtime spine if it is attached; legacy paths stay non-blocking."""
+    registry = getattr(app.state, "pubcast_spine", None) if "app" in globals() else None
+    if registry is None:
+        return None
+    event_bus = registry.get("event_bus")
+    if event_bus is None:
+        return None
+    try:
+        return await event_bus.emit(event_type, payload, source=source)
+    except Exception as exc:
+        logger.warning("[SPINE] Event emit failed for %s: %s", event_type, exc)
+        return None
 
 
 # ─── CORS ─────────────────────────────────────────────────────────────────────
@@ -575,12 +601,9 @@ async def lifespan(application: FastAPI):
     logger.info("[2/12] RoomManager ready — %d rooms", len(room_manager.list_rooms()))
 
     # 2b. PerformanceManager (optional)
-    if _HAS_PERFORMANCE and PerformanceManager is not None:
+    if _HAS_PERFORMANCE and init_performance_manager is not None:
         try:
-            performance_manager = PerformanceManager(
-                policy_path=Path("system_policy.json"),
-                state_path=DATA_DIR / "global" / "performance_profile.json",
-            )
+            performance_manager = init_performance_manager(DATA_DIR, policy_path=Path("system_policy.json"))
             application.state.performance_manager = performance_manager
             logger.info("[2b/12] Performance profile active — %s", performance_manager.active_profile)
         except Exception as exc:
@@ -922,7 +945,20 @@ async def lifespan(application: FastAPI):
     if _HAS_BRIDGE:
         try:
             voxel_bridge = VoxelBridge(DATA_DIR)
-            bridge_connected = voxel_bridge.connect() if hasattr(voxel_bridge, "connect") else False
+            bridge_autoconnect = False
+            if performance_manager is not None and hasattr(performance_manager, "get"):
+                bridge_autoconnect = bool(performance_manager.get("voxel_bridge_autoconnect", False))
+            env_bridge_autoconnect = (os.getenv("PUBCAST_VOXEL_BRIDGE_AUTOCONNECT") or "").strip().lower()
+            if env_bridge_autoconnect in {"1", "true", "yes", "on"}:
+                bridge_autoconnect = True
+            elif env_bridge_autoconnect in {"0", "false", "no", "off"}:
+                bridge_autoconnect = False
+
+            bridge_connected = False
+            if bridge_autoconnect and hasattr(voxel_bridge, "connect"):
+                bridge_connected = voxel_bridge.connect()
+            else:
+                logger.info("[17] Voxel bridge holding - autoconnect disabled by performance profile")
             if voxel_asset_manager is not None and hasattr(voxel_asset_manager, "config"):
                 voxel_asset_manager.config["bridge"] = voxel_bridge
             logger.info("[17] Voxel bridge connect attempted (connected=%s)", bridge_connected)
@@ -1112,20 +1148,44 @@ async def lifespan(application: FastAPI):
 
     # ── Shutdown ──────────────────────────────────────────────────────────────
     logger.info("═══ PubCast AI shutting down ═══")
-    if choreo_controller and hasattr(choreo_controller, "stop"):
-        try:
-            await choreo_controller.stop()
-        except Exception:
-            pass
-    if evo_orchestrator and hasattr(evo_orchestrator, "stop"):
-        try:
-            await evo_orchestrator.stop()
-        except Exception:
-            pass
-    if vault and hasattr(vault, "shutdown"):
-        vault.shutdown()
-    if cricket_keeper and hasattr(cricket_keeper, "close_all"):
-        await cricket_keeper.close_all()
+    async def _shutdown_component(label: str, component: Any, methods: tuple[str, ...]) -> None:
+        if component is None:
+            return
+        for method_name in methods:
+            method = getattr(component, method_name, None)
+            if not callable(method):
+                continue
+            try:
+                result = method()
+                if inspect.isawaitable(result):
+                    await result
+                logger.info("[shutdown] %s.%s complete", label, method_name)
+            except Exception as exc:
+                logger.warning("[shutdown] %s.%s failed: %s", label, method_name, exc)
+                continue
+            return
+
+    shutdown_order = [
+        ("mocap", mocap, ("stop", "shutdown", "close")),
+        ("timeline_player", timeline_player, ("stop", "shutdown", "close")),
+        ("studio_control", studio_control, ("shutdown", "stop", "close")),
+        ("voxel_bridge", voxel_bridge, ("close", "shutdown", "disconnect")),
+        ("unity_bridge", unity_bridge, ("shutdown", "close", "disconnect")),
+        ("conversation_orchestrator", conv_orchestrator, ("shutdown", "stop", "close")),
+        ("evo_orchestrator", evo_orchestrator, ("stop", "shutdown", "close")),
+        ("avatar_studio", avatar_studio, ("shutdown", "stop", "close")),
+        ("alex_bridge", alex_bridge, ("shutdown", "close", "stop")),
+        ("alex_core", alex_core_instance, ("shutdown", "close", "stop")),
+        ("universal_memory", universal_memory_system, ("shutdown", "close", "stop")),
+        ("memory_ingestor", memory_ingestor, ("shutdown", "close", "stop")),
+        ("security_spine", security_spine, ("shutdown", "close", "stop")),
+        ("surface_manager", surface_manager, ("shutdown", "close", "stop")),
+        ("choreo_controller", choreo_controller, ("stop", "shutdown", "close")),
+        ("vault", vault, ("shutdown", "close", "stop")),
+        ("cricket_keeper", cricket_keeper, ("close_all", "shutdown", "close")),
+    ]
+    for label, component, methods in shutdown_order:
+        await _shutdown_component(label, component, methods)
     logger.info("═══ PubCast AI stopped ═══")
 
 
@@ -1152,6 +1212,17 @@ if STATIC_DIR.exists() and any(STATIC_DIR.iterdir()):
 _assets_files = list(ASSETS_DIR.iterdir()) if ASSETS_DIR.exists() else []
 if _assets_files:
     app.mount("/assets", StaticFiles(directory=str(ASSETS_DIR)), name="assets")
+
+if _HAS_RUNTIME_SPINE and attach_spine is not None and install_spine_routes is not None:
+    try:
+        pubcast_spine = attach_spine(app, root=Path(__file__).resolve().parent)
+        install_spine_routes(app)
+        logger.info("[SPINE] Runtime spine attached - %d services", len(list(pubcast_spine.names())))
+    except Exception as exc:
+        logger.warning("[SPINE] Runtime spine attach failed: %s", exc)
+        app.state.pubcast_spine_error = str(exc)
+else:
+    app.state.pubcast_spine_error = "Runtime spine package is not available"
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1506,9 +1577,50 @@ async def avatar_object_interaction(request: Request):
 
 
 @app.get("/api/avatar/motion-lab")
-async def avatar_motion_lab_config():
+async def avatar_motion_lab_config(avatar_id: Optional[str] = None):
     """Return the shared sample frames and cue vocabulary for the motion lab."""
-    return {"ok": True, **build_motion_lab_config()}
+    avatars: List[str] = []
+    visual_assets: Dict[str, Dict[str, str]] = {}
+
+    manifest_path = DATA_DIR / "avatars" / "manifest.json"
+    if manifest_path.exists():
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            for pack in manifest.get("packs", []):
+                for asset in pack.get("assets", []):
+                    avatar_id = str(asset.get("id") or asset.get("character_id") or "").strip().lower()
+                    if not avatar_id:
+                        continue
+                    avatars.append(avatar_id)
+                    asset_type = str(asset.get("asset_type") or asset.get("type") or "").strip().lower()
+                    url = str(asset.get("url") or "").strip()
+                    visual_assets[avatar_id] = {
+                        "status": "glb_present" if asset_type == "glb" else (asset_type or "asset_listed"),
+                        "url": url,
+                        "asset_type": asset_type,
+                    }
+        except Exception as exc:
+            logger.warning("Avatar motion lab manifest read failed: %s", exc)
+
+    avatar_dir = ASSETS_DIR / "avatar"
+    if avatar_dir.exists():
+        for path in avatar_dir.glob("*.glb"):
+            avatar_id = path.stem.lower()
+            avatars.append(avatar_id)
+            visual_assets.setdefault(
+                avatar_id,
+                {
+                    "status": "glb_present",
+                    "url": f"/assets/avatar/{path.name}",
+                    "asset_type": "glb",
+                },
+            )
+
+    requested_avatar_id = _bounded_text(avatar_id, max_len=120).lower()
+    if requested_avatar_id:
+        avatars.append(requested_avatar_id)
+
+    return {"ok": True, **build_motion_lab_config(extra_avatars=avatars, visual_assets=visual_assets)}
 
 
 @app.get("/api/performance/status")
@@ -1922,11 +2034,18 @@ async def voxel_generate_ep(request: Request, identity: Dict[str, Any] = Depends
 
 @app.get("/api/voxel/status")
 async def voxel_status():
+    bridge_status = None
+    if voxel_bridge:
+        bridge_status = voxel_bridge.status() if hasattr(voxel_bridge, "status") and callable(voxel_bridge.status) else getattr(voxel_bridge, "status", None)
+        bridge_status = getattr(bridge_status, "value", bridge_status)
+    bridge_active = bridge_status in {"connected", "degraded", "emergency"}
     return {
         "asset_manager": voxel_asset_manager is not None,
         "studio_integration": voxel_studio is not None,
         "bridge": voxel_bridge is not None,
-        "bridge_status": (voxel_bridge.status() if hasattr(voxel_bridge, "status") and callable(voxel_bridge.status) else getattr(voxel_bridge, "status", None)) if voxel_bridge else None,
+        "bridge_status": bridge_status,
+        "bridge_lifecycle": "active" if bridge_active else ("holding" if voxel_bridge is not None else "off"),
+        "bridge_autoconnect": bool(performance_manager.get("voxel_bridge_autoconnect", False)) if performance_manager is not None and hasattr(performance_manager, "get") else False,
     }
 
 
@@ -2085,10 +2204,39 @@ async def register_session_user(request: Request, identity: Dict[str, Any] = Dep
         host_user_id=host_user_id,
         credit_name=_bounded_text(body.get('credit_name') or display_name, max_len=120),
         presence_mode=_bounded_text(body.get('presence_mode') or 'avatar_static', max_len=40),
+        avatar_id=_bounded_text(body.get('avatar_id'), max_len=120),
+        avatar_asset_url=_bounded_text(body.get('avatar_asset_url'), max_len=240),
+        world_room_id=_bounded_text(body.get('world_room_id') or body.get('room_id'), max_len=120),
         availability=_bounded_text(body.get('availability') or 'available', max_len=40),
         creditable=bool(body.get('creditable', True)),
         care_profile=care_profile,
     )
+    await _emit_spine_event(
+        "session.participant_registered",
+        {
+            "session_id": session_id,
+            "user_id": user_id,
+            "display_name": display_name,
+            "avatar_id": participant.get("avatar_id") or body.get("avatar_id"),
+            "room_id": participant.get("world_room_id") or body.get("world_room_id") or body.get("room_id"),
+        },
+        source="api.session.register",
+    )
+    spine_registry = getattr(app.state, "pubcast_spine", None)
+    spine_avatar_id = _bounded_text(participant.get("avatar_id") or body.get("avatar_id"), max_len=120)
+    spine_room_id = _bounded_text(participant.get("world_room_id") or body.get("world_room_id") or body.get("room_id"), max_len=120)
+    if spine_registry is not None and spine_avatar_id:
+        session_truth = spine_registry.get("session_state")
+        if session_truth is not None:
+            session_truth.register_avatar(spine_avatar_id, room_id=spine_room_id or "waiting_room")
+        await _emit_spine_event(
+            "avatar.registered",
+            {"avatar_id": spine_avatar_id, "user_id": user_id, "room_id": spine_room_id or "waiting_room"},
+            source="api.session.register",
+        )
+        world = spine_registry.get("world_system")
+        if world is not None and spine_room_id:
+            await world.move_avatar(spine_avatar_id, spine_room_id, source="api.session.register", reason="session_register")
     entry_context = await _alex_entry_context(
         user_id=user_id,
         session_id=session_id,
@@ -2399,6 +2547,7 @@ async def get_my_avatar(request: Request, identity: Dict[str, Any] = Depends(cur
     response = {
         "available": True,
         "user_id": client_id,
+        "avatar_id": getattr(avatar, "avatar_id", ""),
         "display_name": getattr(avatar, "display_name", client_id),
         "glow_color": getattr(avatar, "glow_color", "#00FFFF"),
         "badge": getattr(avatar, "metadata", {}).get("badge", ""),
@@ -2439,6 +2588,21 @@ async def update_my_avatar(request: Request, identity: Dict[str, Any] = Depends(
         metadata["gesture"] = body.get("gesture")
     merged["metadata"] = metadata
     avatar = save_avatar(DATA_DIR, client_id, existing.__class__(**merged))
+    spine_registry = getattr(app.state, "pubcast_spine", None)
+    if spine_registry is not None:
+        session_truth = spine_registry.get("session_state")
+        if session_truth is not None:
+            session_truth.register_avatar(avatar.avatar_id, asset_id=avatar.preset, room_id="dressing_room")
+        await _emit_spine_event(
+            "avatar.state_changed",
+            {
+                "user_id": client_id,
+                "avatar_id": avatar.avatar_id,
+                "asset_id": avatar.preset,
+                "changed_fields": sorted(k for k in ["display_name", "glow_color", "color", "preset_id", "badge", "mood", "gesture"] if k in body),
+            },
+            source="api.avatars.me",
+        )
     if ethereal_mgr is not None:
         try:
             if "color" in body or "glow_color" in body:
@@ -2447,7 +2611,7 @@ async def update_my_avatar(request: Request, identity: Dict[str, Any] = Depends(
                 ethereal_mgr.set_mood(client_id, body["mood"])
         except Exception:
             pass
-    return {"ok": True, "user_id": client_id, "display_name": avatar.display_name, "glow_color": avatar.glow_color, "preset_id": avatar.preset, "badge": metadata.get("badge", "")}
+    return {"ok": True, "user_id": client_id, "avatar_id": avatar.avatar_id, "display_name": avatar.display_name, "glow_color": avatar.glow_color, "preset_id": avatar.preset, "badge": metadata.get("badge", "")}
 
 
 @app.get("/api/avatars/presets")
@@ -2683,6 +2847,12 @@ async def studio_control_ws(ws: WebSocket):
     await studio_ws_handler.handle(ws)
 
 
+@app.websocket("/ws/studio")
+async def studio_control_ws_compat(ws: WebSocket):
+    """Compatibility alias for older static pages that connect to /ws/studio."""
+    await studio_control_ws(ws)
+
+
 # ── Chat/production WS (original) ────────────────────────────────────────────
 
 @app.websocket("/ws/{room}")
@@ -2702,6 +2872,11 @@ async def websocket_room(ws: WebSocket, room: str):
     user_is_muted = bool(governance and user_id and governance.is_muted(user_id))
 
     await hub.connect(ws, room)
+    await _emit_spine_event(
+        "client.connected",
+        {"room": room, "user_id": user_id or None, "path": f"/ws/{room}"},
+        source="main.websocket_room",
+    )
 
     tc = getattr(app.state, "thinking_context", None)
     if tc:
@@ -2713,6 +2888,21 @@ async def websocket_room(ws: WebSocket, room: str):
     try:
         while True:
             raw = await ws.receive_text()
+            command_type = "unknown"
+            try:
+                command_type = str((json.loads(raw) or {}).get("type") or "unknown")
+            except Exception:
+                command_type = "invalid_json"
+            await _emit_spine_event(
+                "client.command",
+                {
+                    "room": room,
+                    "user_id": user_id or None,
+                    "type": command_type,
+                    "muted": user_is_muted,
+                },
+                source="main.websocket_room",
+            )
 
             if user_is_muted:
                 continue
@@ -2756,6 +2946,11 @@ async def websocket_room(ws: WebSocket, room: str):
     except Exception as exc:
         logger.warning("WebSocket error in room %r: %s", room, exc)
     finally:
+        await _emit_spine_event(
+            "client.disconnected",
+            {"room": room, "user_id": user_id or None, "path": f"/ws/{room}"},
+            source="main.websocket_room",
+        )
         await hub.disconnect(ws, room)
 
 

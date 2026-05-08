@@ -642,6 +642,10 @@ class VoxelBridge:
         priority:     int = 0,
     ) -> bool:
         """Queue a command for the C++ engine."""
+        if not self.is_connected or not self._running:
+            logger.debug("VoxelBridge command refused while bridge is not active: %s", command_type)
+            return False
+
         _MAP = {
             "REGISTER_CAMERA": CommandType.REGISTER_CAMERA,
             "SWITCH_PREVIEW":  CommandType.SWITCH_PREVIEW,
