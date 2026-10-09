@@ -27,6 +27,7 @@ from .mutation import Role, StateMutationRequest
 from .arbitration import ArbitrationEngine, ArbitrationError, ROLE_PERMISSIONS
 from .semantic_events import EventEnvelope
 from .event_bus import DispatchFailure, DispatchResult, EventBus
+from .semantic_runtime import SemanticCommit, SemanticRuntime
 
 # ── Core EVO pipeline (always safe to import) ────────────────────────────────
 try:
@@ -61,6 +62,7 @@ __all__ = [
     "StateMutationRequest", "Role",
     "ArbitrationEngine", "ArbitrationError", "ROLE_PERMISSIONS",
     "EventEnvelope", "EventBus", "DispatchResult", "DispatchFailure",
+    "SemanticRuntime", "SemanticCommit",
     "EVOOrchestrator", "EVOTick",
     "EPete", "InferenceTask", "TaskType", "InferenceModel",
     "PeteCharacter",
