@@ -12,7 +12,19 @@ does NOT raise on import failure — it surfaces what's available.
 """
 from __future__ import annotations
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
+
+# ── Semantic runtime foundation (dependency-light) ───────────────────────────
+from .semantic_field import (
+    AudienceState,
+    EmotionState as SemanticEmotionState,
+    SafetyState,
+    SceneState as SemanticSceneState,
+    SemanticField,
+    SemanticStore,
+)
+from .mutation import Role, StateMutationRequest
+from .arbitration import ArbitrationEngine, ArbitrationError, ROLE_PERMISSIONS
 
 # ── Core EVO pipeline (always safe to import) ────────────────────────────────
 try:
@@ -40,6 +52,10 @@ except Exception as _evo_exc:
 
 __all__ = [
     "_EVO_CORE_AVAILABLE",
+    "SemanticField", "SemanticStore",
+    "SemanticEmotionState", "AudienceState", "SemanticSceneState", "SafetyState",
+    "StateMutationRequest", "Role",
+    "ArbitrationEngine", "ArbitrationError", "ROLE_PERMISSIONS",
     "EVOOrchestrator", "EVOTick",
     "EPete", "InferenceTask", "TaskType", "InferenceModel",
     "PeteCharacter",
