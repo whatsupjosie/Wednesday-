@@ -12,7 +12,7 @@ does NOT raise on import failure — it surfaces what's available.
 """
 from __future__ import annotations
 
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 
 # ── Semantic runtime foundation (dependency-light) ───────────────────────────
 from .semantic_field import (
@@ -25,10 +25,13 @@ from .semantic_field import (
 )
 from .mutation import Role, StateMutationRequest
 from .arbitration import ArbitrationEngine, ArbitrationError, ROLE_PERMISSIONS
+from .semantic_events import EventEnvelope
+from .event_bus import DispatchFailure, DispatchResult, EventBus
 
 # ── Core EVO pipeline (always safe to import) ────────────────────────────────
 try:
     from .vdi_engine          import VDIEngine, VDIReport, VDISignals, VoiceMode
+    from .vdi_semantic_adapter import VDISemanticAdapter
     from .prosody_engine      import ProsodyEngine, SynthesisParams, EmotionalState
     from .voice_characters    import get_character_profile, list_characters
     from .switchblade_governor import SwitchbladeGovernor, SceneState, PriorityVector
@@ -47,6 +50,7 @@ except Exception as _evo_exc:
     EPete           = None   # type: ignore[assignment,misc]
     PeteCharacter   = None   # type: ignore[assignment,misc]
     VDIEngine       = None   # type: ignore[assignment,misc]
+    VDISemanticAdapter = None  # type: ignore[assignment,misc]
     ProsodyEngine   = None   # type: ignore[assignment,misc]
     SwitchbladeGovernor = None  # type: ignore[assignment,misc]
 
@@ -56,10 +60,11 @@ __all__ = [
     "SemanticEmotionState", "AudienceState", "SemanticSceneState", "SafetyState",
     "StateMutationRequest", "Role",
     "ArbitrationEngine", "ArbitrationError", "ROLE_PERMISSIONS",
+    "EventEnvelope", "EventBus", "DispatchResult", "DispatchFailure",
     "EVOOrchestrator", "EVOTick",
     "EPete", "InferenceTask", "TaskType", "InferenceModel",
     "PeteCharacter",
-    "VDIEngine", "VDIReport", "VDISignals", "VoiceMode",
+    "VDIEngine", "VDIReport", "VDISignals", "VoiceMode", "VDISemanticAdapter",
     "ProsodyEngine", "SynthesisParams", "EmotionalState",
     "SwitchbladeGovernor", "SceneState", "PriorityVector",
     "get_character_profile", "list_characters",
