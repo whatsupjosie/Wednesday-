@@ -34,6 +34,7 @@ try:
     from .vdi_engine          import VDIEngine, VDIReport, VDISignals, VoiceMode
     from .vdi_semantic_adapter import VDISemanticAdapter
     from .prosody_engine      import ProsodyEngine, SynthesisParams, EmotionalState
+    from .prosody_semantic_adapter import ProsodySemanticAdapter
     from .voice_characters    import get_character_profile, list_characters
     from .switchblade_governor import SwitchbladeGovernor, SceneState, PriorityVector
     from .epete               import EPete, InferenceTask, TaskType, InferenceModel
@@ -53,6 +54,7 @@ except Exception as _evo_exc:
     VDIEngine       = None   # type: ignore[assignment,misc]
     VDISemanticAdapter = None  # type: ignore[assignment,misc]
     ProsodyEngine   = None   # type: ignore[assignment,misc]
+    ProsodySemanticAdapter = None  # type: ignore[assignment,misc]
     SwitchbladeGovernor = None  # type: ignore[assignment,misc]
 
 __all__ = [
@@ -67,7 +69,7 @@ __all__ = [
     "EPete", "InferenceTask", "TaskType", "InferenceModel",
     "PeteCharacter",
     "VDIEngine", "VDIReport", "VDISignals", "VoiceMode", "VDISemanticAdapter",
-    "ProsodyEngine", "SynthesisParams", "EmotionalState",
+    "ProsodyEngine", "SynthesisParams", "EmotionalState", "ProsodySemanticAdapter",
     "SwitchbladeGovernor", "SceneState", "PriorityVector",
     "get_character_profile", "list_characters",
 ]
